@@ -1,10 +1,13 @@
 import { Hono } from "hono"
 import { describeRoute, validator, resolver } from "hono-openapi"
 import z from "zod"
+import path from "path"
+import fs from "fs/promises"
 import { File } from "../../file"
 import { Ripgrep } from "../../file/ripgrep"
 import { LSP } from "../../lsp"
 import { Instance } from "../../project/instance"
+import { Filesystem } from "../../util/filesystem"
 import { lazy } from "../../util/lazy"
 
 export const FileRoutes = lazy(() =>
@@ -192,6 +195,122 @@ export const FileRoutes = lazy(() =>
       async (c) => {
         const content = await File.status()
         return c.json(content)
+      },
+    )
+    .post(
+      "/file",
+      describeRoute({
+        summary: "Write file",
+        description: "Write content to a file in the project directory.",
+        operationId: "file.write",
+        responses: {
+          200: {
+            description: "File written",
+            content: {
+              "application/json": {
+                schema: resolver(z.object({ ok: z.boolean() })),
+              },
+            },
+          },
+        },
+      }),
+      validator(
+        "json",
+        z.object({
+          path: z.string(),
+          content: z.string(),
+          encoding: z.enum(["utf8", "base64"]).optional(),
+        }),
+      ),
+      async (c) => {
+        const { path: filePath, content, encoding } = c.req.valid("json")
+        const full = path.join(Instance.directory, filePath)
+        if (!Instance.containsPath(full)) {
+          return c.json({ ok: false }, 403)
+        }
+        if (encoding === "base64") {
+          await Filesystem.write(full, Buffer.from(content, "base64"))
+        } else {
+          await Filesystem.write(full, content)
+        }
+        return c.json({ ok: true })
+      },
+    )
+    .delete(
+      "/file",
+      describeRoute({
+        summary: "Delete file",
+        description: "Delete a file from the project directory.",
+        operationId: "file.delete",
+        responses: {
+          200: {
+            description: "File deleted",
+            content: {
+              "application/json": {
+                schema: resolver(z.object({ ok: z.boolean() })),
+              },
+            },
+          },
+        },
+      }),
+      validator(
+        "json",
+        z.object({
+          path: z.string(),
+        }),
+      ),
+      async (c) => {
+        const { path: filePath } = c.req.valid("json")
+        const full = path.join(Instance.directory, filePath)
+        if (!Instance.containsPath(full)) {
+          return c.json({ ok: false }, 403)
+        }
+        const stat = await fs.lstat(full).catch(() => null)
+        if (!stat) {
+          return c.json({ ok: true })
+        }
+        if (stat.isDirectory()) {
+          await fs.rm(full, { recursive: true, force: true })
+        } else {
+          await fs.unlink(full)
+        }
+        return c.json({ ok: true })
+      },
+    )
+    .patch(
+      "/file",
+      describeRoute({
+        summary: "Rename file",
+        description: "Rename or move a file/directory within the project directory.",
+        operationId: "file.rename",
+        responses: {
+          200: {
+            description: "File renamed",
+            content: {
+              "application/json": {
+                schema: resolver(z.object({ ok: z.boolean() })),
+              },
+            },
+          },
+        },
+      }),
+      validator(
+        "json",
+        z.object({
+          path: z.string(),
+          newPath: z.string(),
+        }),
+      ),
+      async (c) => {
+        const { path: fromPath, newPath } = c.req.valid("json")
+        const from = path.join(Instance.directory, fromPath)
+        const to = path.join(Instance.directory, newPath)
+        if (!Instance.containsPath(from) || !Instance.containsPath(to)) {
+          return c.json({ ok: false }, 403)
+        }
+        await fs.mkdir(path.dirname(to), { recursive: true })
+        await fs.rename(from, to)
+        return c.json({ ok: true })
       },
     ),
 )

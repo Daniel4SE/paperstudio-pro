@@ -106,11 +106,17 @@ When the user uploads a `.sty` or `.cls` file: automatically use it as the docum
    \caption{...}\end{figure}
    The description must specify: visual content, color scheme, style (photograph/diagram/chart), layout, all text labels, and any annotations.
 
-7. **REFERENCES**: Use \cite{key} throughout. Minimum 50 unique citations for journals, 30 for conferences. Use the papers found in the literature search as primary references. All must be plausible real papers.
+7. **REFERENCES — STRICT SOURCING RULE (NON-NEGOTIABLE)**:
+   - Use `\cite{key}` throughout. Minimum 50 unique citations for journals, 30 for conferences.
+   - **EVERY single BibTeX entry in refs.bib MUST come from a paper explicitly returned by a `paper_search` tool call in the current session.**
+   - The BibTeX fields (title, authors, year, venue, DOI) must be copied verbatim from the search result data — never approximated, recalled from training data, or generated.
+   - If you need more references, run additional `paper_search` queries until you have enough real results. DO NOT invent entries to fill the count.
+   - A citation key can only be added after its source paper appeared in a `paper_search` result.
+   - ZERO tolerance: fabricated, hallucinated, or memory-generated citations are an automatic failure.
 
 8. **LaTeX must compile** with pdflatex. Use standard packages: amsmath, amssymb, graphicx, booktabs, hyperref, algorithm2e, xcolor, subcaption, etc.
 
-9. Include \bibliographystyle{plain} and \bibliography{ref} at the end.
+9. Include \bibliographystyle{plain} and \bibliography{refs} at the end.
 
 ## Research Pipeline Workflow
 
@@ -139,8 +145,12 @@ Ask the user to confirm before proceeding to generation.
 ### Stage 3: Full Paper Generation
 Generate all files in sequence:
 1. **main.tex** -- Complete LaTeX paper following ALL rules above (10,000+ words)
-2. **ref.bib** -- BibTeX file with 50+ references (30+ for conferences)
-3. Use `ref_verify` to verify all references against CrossRef
+2. **refs.bib** -- BibTeX file built **exclusively** from papers returned by `paper_search` in Stage 1 and any additional searches run in this stage. For each entry:
+   - Copy title, authors, year, venue, and DOI **exactly** from the search result
+   - Construct the BibTeX entry from that data only
+   - If you need more refs than Stage 1 found, run more `paper_search` queries now
+   - NEVER add a paper that did not appear in a `paper_search` result
+3. Use `ref_verify` to validate DOIs and fix formatting — but note: `ref_verify` does not authorize fabricated entries; entries not from search results must be removed, not "corrected"
 4. Generate Python figure scripts for all referenced figures
 5. Use `latex_compile` to compile and verify the paper
 

@@ -31,6 +31,7 @@ import { RadioGroup } from "@opencode-ai/ui/radio-group"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { ModelSelectorPopover } from "@/components/dialog-select-model"
 import { DialogSelectModelUnpaid } from "@/components/dialog-select-model-unpaid"
+import { DialogSettings } from "@/components/dialog-settings"
 import { useProviders } from "@/hooks/use-providers"
 import { useCommand } from "@/context/command"
 import { Persist, persisted } from "@/utils/persist"
@@ -493,10 +494,68 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       .filter((agent) => !agent.hidden && agent.mode !== "primary")
       .map((agent): AtOption => ({ type: "agent", name: agent.name, display: agent.name })),
   )
+  const hasGoogleProvider = createMemo(() => providers.connected().some((provider) => provider.id === "google"))
+  const atPresets = createMemo<AtOption[]>(() => [
+    { type: "preset", name: "image", display: "@image", description: "Generate or edit image" },
+    { type: "preset", name: "research", display: "@research", description: "Search papers (auto figure, add --no-figure to skip)" },
+    { type: "preset", name: "edit", display: "@edit", description: "Edit current document" },
+  ])
   const agentNames = createMemo(() => local.agent.list().map((agent) => agent.name))
+
+  const replaceCurrentAtQueryWithText = (value: string) => {
+    const selection = window.getSelection()
+    if (!selection) return false
+
+    if (selection.rangeCount === 0 || !editorRef.contains(selection.anchorNode)) {
+      editorRef.focus()
+      const cursor = prompt.cursor() ?? promptLength(prompt.current())
+      setCursorPosition(editorRef, cursor)
+    }
+
+    if (selection.rangeCount === 0) return false
+    const range = selection.getRangeAt(0)
+    if (!editorRef.contains(range.startContainer)) return false
+
+    const cursorPosition = getCursorPosition(editorRef)
+    const rawText = prompt
+      .current()
+      .map((part) => ("content" in part ? part.content : ""))
+      .join("")
+    const textBeforeCursor = rawText.substring(0, cursorPosition)
+    const atMatch = textBeforeCursor.match(/@(\S*)$/)
+    if (!atMatch) return false
+
+    const start = atMatch.index ?? cursorPosition - atMatch[0].length
+    setRangeEdge(editorRef, range, "start", start)
+    setRangeEdge(editorRef, range, "end", cursorPosition)
+    range.deleteContents()
+
+    const fragment = createTextFragment(value)
+    const last = fragment.lastChild
+    range.insertNode(fragment)
+    if (last) {
+      if (last.nodeType === Node.TEXT_NODE) {
+        const text = last.textContent ?? ""
+        range.setStart(last, text === "\u200B" ? 0 : text.length)
+      } else {
+        range.setStartAfter(last)
+      }
+    }
+    range.collapse(true)
+    selection.removeAllRanges()
+    selection.addRange(range)
+
+    handleInput()
+    closePopover()
+    return true
+  }
 
   const handleAtSelect = (option: AtOption | undefined) => {
     if (!option) return
+    if (option.type === "preset") {
+      replaceCurrentAtQueryWithText(`${option.display} `)
+      return
+    }
     if (option.type === "agent") {
       addPart({ type: "agent", name: option.name, content: "@" + option.name, start: 0, end: 0 })
     } else {
@@ -506,7 +565,9 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
 
   const atKey = (x: AtOption | undefined) => {
     if (!x) return ""
-    return x.type === "agent" ? `agent:${x.name}` : `file:${x.path}`
+    if (x.type === "agent") return `agent:${x.name}`
+    if (x.type === "preset") return `preset:${x.name}`
+    return `file:${x.path}`
   }
 
   const {
@@ -518,6 +579,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   } = useFilteredList<AtOption>({
     items: async (query) => {
       const agents = agentList()
+      const presets = atPresets()
       const open = recent()
       const seen = new Set(open)
       const pinned: AtOption[] = open.map((path) => ({ type: "file", path, display: path, recent: true }))
@@ -525,20 +587,22 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       const fileOptions: AtOption[] = paths
         .filter((path) => !seen.has(path))
         .map((path) => ({ type: "file", path, display: path }))
-      return [...agents, ...pinned, ...fileOptions]
+      return [...agents, ...presets, ...pinned, ...fileOptions]
     },
     key: atKey,
-    filterKeys: ["display"],
+    filterKeys: ["display", "description"],
     groupBy: (item) => {
       if (item.type === "agent") return "agent"
+      if (item.type === "preset") return "preset"
       if (item.recent) return "recent"
       return "file"
     },
     sortGroupsBy: (a, b) => {
       const rank = (category: string) => {
         if (category === "agent") return 0
-        if (category === "recent") return 1
-        return 2
+        if (category === "preset") return 1
+        if (category === "recent") return 2
+        return 3
       }
       return rank(a.category) - rank(b.category)
     },
@@ -975,6 +1039,8 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     newSessionWorktree: () => props.newSessionWorktree,
     onNewSessionWorktreeReset: props.onNewSessionWorktreeReset,
     onSubmit: props.onSubmit,
+    isGoogleConnected: () => hasGoogleProvider(),
+    onGoogleProviderRequired: () => dialog.show(() => <DialogSettings defaultTab="providers" />),
   })
 
   const handleKeyDown = (event: KeyboardEvent) => {

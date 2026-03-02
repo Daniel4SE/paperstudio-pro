@@ -513,6 +513,16 @@ export namespace File {
       return { type: "text", content: "" }
     }
 
+    // PDF files: return as base64 so the frontend PDF viewer can render them
+    if (path.extname(file).toLowerCase() === ".pdf") {
+      if (await Filesystem.exists(full)) {
+        const buffer = await Filesystem.readBytes(full).catch(() => Buffer.from([]))
+        const content = buffer.toString("base64")
+        return { type: "text", content, mimeType: "application/pdf", encoding: "base64" }
+      }
+      return { type: "binary", content: "" }
+    }
+
     const text = isTextByExtension(file) || isTextByName(file)
 
     if (isBinaryByExtension(file) && !text) {

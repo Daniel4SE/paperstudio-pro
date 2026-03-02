@@ -10,6 +10,7 @@ import { parseLatexLog, countLogEntries, type LogEntry, type LogEntryType } from
 interface CompilationLogPanelProps {
   log?: string
   onClose: () => void
+  onFixError?: (entry: LogEntry) => void
 }
 
 type TabFilter = "all" | "error" | "warning" | "info"
@@ -148,45 +149,62 @@ export function CompilationLogPanel(props: CompilationLogPanelProps) {
                     }}
                   >
                     {/* Entry header row */}
-                    <button
-                      class="w-full flex items-start gap-2 px-3 py-2.5 text-left hover:bg-surface-base transition-colors"
-                      onClick={() => {
-                        if (hasContext()) toggleExpanded(idx())
-                      }}
-                      style={{ cursor: hasContext() ? "pointer" : "default" }}
-                    >
-                      {/* Chevron */}
-                      <Show when={hasContext()}>
-                        <span
-                          class="mt-0.5 shrink-0 text-text-base transition-transform duration-150"
-                          style={{ transform: expanded() ? "rotate(90deg)" : "rotate(0deg)" }}
-                        >
-                          <ChevronRightIcon />
-                        </span>
-                      </Show>
-                      <Show when={!hasContext()}>
-                        <span class="w-3 shrink-0" />
-                      </Show>
-
-                      {/* Message */}
-                      <span
-                        class={`flex-1 text-12-regular break-words ${messageColor(entry.type)}`}
-                        classList={{
-                          "font-medium": entry.type === "error" || entry.type === "warning",
+                    <div class="group/entry flex items-start w-full hover:bg-surface-base transition-colors">
+                      <button
+                        class="flex-1 flex items-start gap-2 px-3 py-2.5 text-left min-w-0"
+                        onClick={() => {
+                          if (hasContext()) toggleExpanded(idx())
                         }}
+                        style={{ cursor: hasContext() ? "pointer" : "default" }}
                       >
-                        {entry.message}
-                      </span>
+                        {/* Chevron */}
+                        <Show when={hasContext()}>
+                          <span
+                            class="mt-0.5 shrink-0 text-text-base transition-transform duration-150"
+                            style={{ transform: expanded() ? "rotate(90deg)" : "rotate(0deg)" }}
+                          >
+                            <ChevronRightIcon />
+                          </span>
+                        </Show>
+                        <Show when={!hasContext()}>
+                          <span class="w-3 shrink-0" />
+                        </Show>
 
-                      {/* File:line badge */}
-                      <Show when={entry.file || entry.line}>
-                        <span class="shrink-0 ml-2 px-1.5 py-0.5 rounded text-10-regular text-text-base bg-surface-raised-base whitespace-nowrap">
-                          {entry.file ?? ""}
-                          <Show when={entry.file && entry.line}>:</Show>
-                          <Show when={entry.line}>{entry.line}</Show>
+                        {/* Message */}
+                        <span
+                          class={`flex-1 text-12-regular break-words ${messageColor(entry.type)}`}
+                          classList={{
+                            "font-medium": entry.type === "error" || entry.type === "warning",
+                          }}
+                        >
+                          {entry.message}
                         </span>
+
+                        {/* File:line badge */}
+                        <Show when={entry.file || entry.line}>
+                          <span class="shrink-0 ml-2 px-1.5 py-0.5 rounded text-10-regular text-text-base bg-surface-raised-base whitespace-nowrap">
+                            {entry.file ?? ""}
+                            <Show when={entry.file && entry.line}>:</Show>
+                            <Show when={entry.line}>{entry.line}</Show>
+                          </span>
+                        </Show>
+                      </button>
+
+                      {/* Fix with AI button — visible on hover for errors/warnings */}
+                      <Show when={props.onFixError && (entry.type === "error" || entry.type === "warning")}>
+                        <button
+                          class="shrink-0 flex items-center gap-1 self-center mr-2 px-2 py-1 rounded text-10-medium opacity-0 group-hover/entry:opacity-100 transition-opacity bg-accent-base/10 hover:bg-accent-base/20 text-accent-base whitespace-nowrap"
+                          title="Ask AI to fix this error"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            props.onFixError!(entry)
+                          }}
+                        >
+                          <WrenchIcon />
+                          Fix
+                        </button>
                       </Show>
-                    </button>
+                    </div>
 
                     {/* Context block (expanded) */}
                     <Show when={expanded() && entry.context}>
@@ -221,6 +239,20 @@ function ChevronRightIcon() {
   return (
     <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
       <path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+    </svg>
+  )
+}
+
+function WrenchIcon() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path
+        d="M13.5 2.5L11 5l-1.5-.5L9 3l2.5-2.5A4 4 0 0 0 4 5.5l-2.5 7A1.5 1.5 0 0 0 3.5 14l7-2.5A4 4 0 0 0 13.5 2.5z"
+        stroke="currentColor"
+        stroke-width="1.3"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
     </svg>
   )
 }

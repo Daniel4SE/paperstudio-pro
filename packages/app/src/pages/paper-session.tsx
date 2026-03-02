@@ -29,9 +29,14 @@ import { useServer } from "@/context/server"
 import { usePlatform } from "@/context/platform"
 
 import { LatexEditor } from "@/components/paper/latex-editor"
-import { ImagePreviewPanel } from "@/components/paper/image-preview-panel"
+import { ImagePreviewPanel, type ImageEditRequest } from "@/components/paper/image-preview-panel"
 import { PdfPreview } from "@/components/paper/pdf-preview"
-import { parseLatexLog, countLogEntries } from "@/components/paper/latex-log-parser"
+import {
+  parseLatexLog,
+  countLogEntries,
+  countUndefinedCitationWarnings,
+  type LogEntry,
+} from "@/components/paper/latex-log-parser"
 import { PaperFileTree, type PaperFile, type ImageDropData } from "@/components/paper/paper-file-tree"
 import { TerminalPanel } from "@/pages/session/terminal-panel"
 import { MessageTimeline } from "@/pages/session/message-timeline"
@@ -65,9 +70,61 @@ function isImageFile(path: string): boolean {
   const ext = path.split(".").pop()?.toLowerCase() || ""
   return IMAGE_EXTENSIONS.has(ext)
 }
+function isPdfFile(path: string): boolean {
+  return path.split(".").pop()?.toLowerCase() === "pdf"
+}
+
+function mapSubtreePaths(node: PaperFile, oldBase: string, newBase: string, renamedRootName: string): PaperFile {
+  const suffix = node.path === oldBase ? "" : node.path.slice(oldBase.length)
+  const nextPath = `${newBase}${suffix}`
+  const nextName = node.path === oldBase ? renamedRootName : node.name
+  return {
+    ...node,
+    name: nextName,
+    path: nextPath,
+    children: node.children?.map((child) => mapSubtreePaths(child, oldBase, newBase, renamedRootName)),
+  }
+}
+
+function renameInTree(files: PaperFile[], oldPath: string, newPath: string, newName: string): PaperFile[] {
+  return files.map((node) => {
+    if (node.path === oldPath) {
+      return mapSubtreePaths(node, oldPath, newPath, newName)
+    }
+    if (node.children?.length) {
+      return { ...node, children: renameInTree(node.children, oldPath, newPath, newName) }
+    }
+    return node
+  })
+}
+
+function removeFromTree(files: PaperFile[], targetPath: string): PaperFile[] {
+  const prefix = `${targetPath}/`
+  return files
+    .filter((node) => node.path !== targetPath && !node.path.startsWith(prefix))
+    .map((node) => {
+      if (node.children?.length) {
+        return { ...node, children: removeFromTree(node.children, targetPath) }
+      }
+      return node
+    })
+}
+
+function flattenTreeFiles(files: PaperFile[]): PaperFile[] {
+  const out: PaperFile[] = []
+  const walk = (list: PaperFile[]) => {
+    for (const f of list) {
+      if (f.type === "file") out.push(f)
+      if (f.children?.length) walk(f.children)
+    }
+  }
+  walk(files)
+  return out
+}
 
 // Panel width persistence keys
 const PANEL_WIDTHS_KEY = "paper-session-panel-widths"
+const CHAT_SCROLL_KEY_PREFIX = "paper-session-chat-scroll-v1"
 
 interface PanelWidths {
   fileTree: number
@@ -81,6 +138,43 @@ const DEFAULT_WIDTHS: PanelWidths = {
   editor: 400,
   preview: 400,
   chat: 380,
+}
+
+// Hide noisy generated/temporary files in the paper file tree.
+// These files can still exist on disk, but they are rarely useful to edit directly.
+const HIDDEN_PAPER_FILE_EXACT = new Set([".DS_Store"])
+const HIDDEN_PAPER_FILE_SUFFIX = [
+  ".aux",
+  ".bbl",
+  ".bcf",
+  ".blg",
+  ".fdb_latexmk",
+  ".fls",
+  ".idx",
+  ".ilg",
+  ".ind",
+  ".lof",
+  ".log",
+  ".lot",
+  ".out",
+  ".run.xml",
+  ".synctex.gz",
+  ".toc",
+  ".tmp",
+  ".temp",
+  ".bak",
+  ".orig",
+  ".rej",
+  ".swp",
+  ".swo",
+  "~",
+]
+
+function shouldHidePaperTreeNode(name: string): boolean {
+  const lower = name.toLowerCase()
+  if (HIDDEN_PAPER_FILE_EXACT.has(name)) return true
+  if (lower.startsWith("._")) return true // macOS metadata files
+  return HIDDEN_PAPER_FILE_SUFFIX.some((suffix) => lower.endsWith(suffix))
 }
 
 function loadWidths(): PanelWidths {
@@ -214,10 +308,19 @@ export default function PaperSession() {
   const [showCopyDialog, setShowCopyDialog] = createSignal(false)
   const [copyName, setCopyName] = createSignal("")
   const [projectActionBusy, setProjectActionBusy] = createSignal(false)
+  const [fileTreeRefreshing, setFileTreeRefreshing] = createSignal(false)
+  let fileTreeRefreshTimer: number | undefined
+  let fileTreeRefreshInFlight = false
+  let fileTreeRefreshQueued = false
 
   // Helpers
+  const serverBaseUrl = createMemo(() => {
+    const current = server.current?.http?.url?.trim()
+    return (current ? current.replace(/\/+$/, "") : "http://127.0.0.1:4096")
+  })
+
   const writeUrl = () =>
-    `http://127.0.0.1:4096/session/${params.id}/file/write?directory=${encodeURIComponent((sdk as any).directory || projectDirectory())}`
+    `${serverBaseUrl()}/file?directory=${encodeURIComponent((sdk as any).directory || projectDirectory())}`
 
   /** Collect all flat text+binary files from the loaded tree */
   const collectAllFiles = () => {
@@ -286,7 +389,7 @@ export default function PaperSession() {
       const parentDir = dir.split("/").slice(0, -1).join("/")
       const destDir = `${parentDir}/${newName.trim()}`
       // Execute mv via the session shell endpoint
-      const res = await fetch(`http://127.0.0.1:4096/session/${params.id}/run`, {
+      const res = await fetch(`${serverBaseUrl()}/session/${params.id}/run`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ command: `mv "${dir}" "${destDir}"` }),
@@ -360,6 +463,8 @@ export default function PaperSession() {
     activeFile: "",
     editorContent: "",
     pdfData: undefined as string | undefined,
+    pdfSourceType: undefined as "compiled" | "file" | undefined,
+    pdfSourcePath: undefined as string | undefined,
     compiling: false,
     compilationError: undefined as string | undefined,
     compilationTime: undefined as number | undefined,
@@ -410,16 +515,104 @@ export default function PaperSession() {
     working: () => true,
     overflowAnchor: "dynamic",
   })
+  const chatScrollStorageKey = createMemo(() => {
+    const id = params.id
+    if (!id) return undefined
+    return `${CHAT_SCROLL_KEY_PREFIX}:${projectDirectory()}:${id}`
+  })
 
-  let chatScroller: HTMLDivElement | undefined
+  const [chatScroller, setChatScroller] = createSignal<HTMLDivElement | undefined>()
   let chatContent: HTMLDivElement | undefined
   let inputRef!: HTMLDivElement
   let promptDock: HTMLDivElement | undefined
+  let restoredChatScrollKey: string | undefined
+  let restoredChatScrollTarget: HTMLDivElement | undefined
+  let persistChatScrollRaf: number | undefined
+  let restoreChatScrollRaf: number | undefined
+  let restoreChatScrollToken = 0
+
+  const parseStoredScroll = (raw: string | null): number | undefined => {
+    if (raw === null) return undefined
+    const value = Number(raw)
+    if (!Number.isFinite(value)) return undefined
+    return Math.max(0, value)
+  }
+
+  const readStoredChatScroll = (key: string): number | undefined => {
+    try {
+      const sessionValue = parseStoredScroll(sessionStorage.getItem(key))
+      if (sessionValue !== undefined) return sessionValue
+    } catch {}
+    try {
+      return parseStoredScroll(localStorage.getItem(key))
+    } catch {}
+    return undefined
+  }
+
+  const persistChatScroll = () => {
+    const key = chatScrollStorageKey()
+    const scroller = chatScroller()
+    if (!key || !scroller) return
+    const value = String(Math.max(0, scroller.scrollTop))
+    try {
+      sessionStorage.setItem(key, value)
+    } catch {}
+    try {
+      localStorage.setItem(key, value)
+    } catch {}
+  }
+
+  const schedulePersistChatScroll = () => {
+    if (persistChatScrollRaf !== undefined) cancelAnimationFrame(persistChatScrollRaf)
+    persistChatScrollRaf = requestAnimationFrame(() => {
+      persistChatScrollRaf = undefined
+      persistChatScroll()
+    })
+  }
 
   const setChatScrollRef = (el: HTMLDivElement | undefined) => {
-    chatScroller = el
+    setChatScroller(el)
     autoScroll.scrollRef(el)
   }
+
+  createEffect(() => {
+    const key = chatScrollStorageKey()
+    const ready = messagesReady()
+    const scroller = chatScroller()
+    if (!key || !ready || !scroller) return
+    if (restoredChatScrollKey === key && restoredChatScrollTarget === scroller) return
+    if (restoreChatScrollRaf !== undefined) cancelAnimationFrame(restoreChatScrollRaf)
+    const token = ++restoreChatScrollToken
+    const targetScroll = readStoredChatScroll(key)
+
+    const attemptRestore = (remaining: number) => {
+      restoreChatScrollRaf = requestAnimationFrame(() => {
+        if (token !== restoreChatScrollToken) return
+        const activeScroller = chatScroller()
+        if (!activeScroller) return
+
+        if (targetScroll !== undefined) {
+          const maxY = Math.max(0, activeScroller.scrollHeight - activeScroller.clientHeight)
+          const next = Math.min(targetScroll, maxY)
+          if (Math.abs(activeScroller.scrollTop - next) > 0.5) {
+            activeScroller.scrollTop = next
+            autoScroll.handleScroll()
+          }
+
+          const reached = targetScroll <= maxY + 1 || Math.abs(activeScroller.scrollTop - targetScroll) <= 1
+          if (!reached && remaining > 0) {
+            attemptRestore(remaining - 1)
+            return
+          }
+        }
+
+        restoredChatScrollKey = key
+        restoredChatScrollTarget = activeScroller
+      })
+    }
+
+    attemptRestore(30)
+  })
 
   const anchor = (id: string) => `message-${id}`
 
@@ -453,7 +646,18 @@ export default function PaperSession() {
       }
     }
     window.addEventListener("keydown", handleKeyDown)
-    onCleanup(() => window.removeEventListener("keydown", handleKeyDown))
+    const handleBeforeUnload = () => {
+      persistChatScroll()
+    }
+    window.addEventListener("beforeunload", handleBeforeUnload)
+    onCleanup(() => {
+      persistChatScroll()
+      window.removeEventListener("keydown", handleKeyDown)
+      window.removeEventListener("beforeunload", handleBeforeUnload)
+      if (persistChatScrollRaf !== undefined) cancelAnimationFrame(persistChatScrollRaf)
+      if (restoreChatScrollRaf !== undefined) cancelAnimationFrame(restoreChatScrollRaf)
+      restoreChatScrollToken++
+    })
   })
 
   // ─── Load real project files from SDK ──────────────────────────────────
@@ -465,6 +669,7 @@ export default function PaperSession() {
 
       for (const node of nodes) {
         if (node.ignored) continue
+        if (node.type === "file" && shouldHidePaperTreeNode(node.name)) continue
         if (node.type === "directory") {
           paperFiles.push({
             name: node.name,
@@ -495,43 +700,91 @@ export default function PaperSession() {
   }
 
   // Recursive file loading: load top-level, then expand directories one level
-  const loadFilesRecursive = async () => {
-    const topLevel = await loadProjectFiles("")
-    if (topLevel.length === 0) {
-      // Fallback: show a default main.tex if project is empty
-      setState("files", [{ name: "main.tex", path: "main.tex", type: "file" as const, content: "% Start writing your paper here\n\\documentclass{article}\n\\begin{document}\n\nHello, world!\n\n\\end{document}\n" }])
-      setState("activeFile", "main.tex")
-      setState("editorContent", "% Start writing your paper here\n\\documentclass{article}\n\\begin{document}\n\nHello, world!\n\n\\end{document}\n")
-      setState("filesLoaded", true)
+  const loadFilesRecursive = async (options?: { preserveSelection?: boolean }) => {
+    const preserveSelection = options?.preserveSelection ?? false
+    if (fileTreeRefreshInFlight) {
+      fileTreeRefreshQueued = true
       return
     }
+    fileTreeRefreshInFlight = true
+    setFileTreeRefreshing(true)
+    try {
+      const topLevel = await loadProjectFiles("")
+      if (topLevel.length === 0) {
+        setState("files", [])
+        setState("filesLoaded", true)
+        return
+      }
 
-    // Load one level of children for directories
-    for (const f of topLevel) {
-      if (f.type === "folder") {
-        f.children = await loadDirChildren(f.path)
+      // Recursively load ALL directory levels (supports figs/, doc/figs/, etc.)
+      const loadAllChildren = async (files: PaperFile[], depth = 0): Promise<void> => {
+        if (depth > 5) return // Safety: max 5 levels deep
+        for (const f of files) {
+          if (f.type === "folder") {
+            f.children = await loadDirChildren(f.path)
+            if (f.children.length > 0) {
+              await loadAllChildren(f.children, depth + 1)
+            }
+          }
+        }
+      }
+      await loadAllChildren(topLevel)
+
+      setState("files", topLevel)
+      setState("filesLoaded", true)
+
+      const flatFiles = flattenTreeFiles(topLevel)
+      const activeInTree = state.activeFile ? flatFiles.find((f) => f.path === state.activeFile) : undefined
+      const firstTex = flatFiles.find((f) => f.path.endsWith(".tex"))
+      const fallback = firstTex ?? flatFiles[0]
+      const nextActiveFile = preserveSelection && activeInTree ? activeInTree.path : fallback?.path
+
+      if (nextActiveFile && nextActiveFile !== state.activeFile) {
+        setState("activeFile", nextActiveFile)
+        try {
+          const res = await sdk.client.file.read({ path: nextActiveFile })
+          if (res.data?.content) {
+            let content = res.data.content
+            if (isImageFile(nextActiveFile) && (res.data as any).encoding === "base64") {
+              const mimeType = (res.data as any).mimeType || `image/${nextActiveFile.split(".").pop()?.toLowerCase() || "png"}`
+              content = `data:${mimeType};base64,${res.data.content}`
+            }
+            setState("editorContent", content)
+          }
+        } catch {}
+      }
+    } finally {
+      fileTreeRefreshInFlight = false
+      if (fileTreeRefreshQueued) {
+        fileTreeRefreshQueued = false
+        void loadFilesRecursive({ preserveSelection: true })
+      } else {
+        setFileTreeRefreshing(false)
       }
     }
-
-    setState("files", topLevel)
-    setState("filesLoaded", true)
-
-    // Auto-select first .tex file if available
-    const firstTex = topLevel.find((f) => f.type === "file" && f.name.endsWith(".tex"))
-    if (firstTex) {
-      setState("activeFile", firstTex.path)
-      // Load file content
-      try {
-        const res = await sdk.client.file.read({ path: firstTex.path })
-        if (res.data?.content) {
-          setState("editorContent", res.data.content)
-          // Update the file entry with content
-          const idx = topLevel.findIndex((f) => f.path === firstTex.path)
-          if (idx >= 0) setState("files", idx, "content", res.data.content)
-        }
-      } catch {}
-    }
   }
+
+  const queueFileTreeRefresh = (delayMs = 220) => {
+    if (fileTreeRefreshTimer !== undefined) window.clearTimeout(fileTreeRefreshTimer)
+    fileTreeRefreshTimer = window.setTimeout(() => {
+      void loadFilesRecursive({ preserveSelection: true })
+    }, delayMs)
+  }
+
+  const handleRefreshFiles = () => {
+    void loadFilesRecursive({ preserveSelection: true })
+  }
+
+  createEffect(
+    on(
+      () => sdk.directory,
+      (next, prev) => {
+        if (!next || !prev || next === prev) return
+        setState("files", [])
+        setState("filesLoaded", false)
+      },
+    ),
+  )
 
   // Trigger file loading when SDK directory is available
   createEffect(() => {
@@ -539,6 +792,25 @@ export default function PaperSession() {
     if (!dir) return
     if (state.filesLoaded) return
     void loadFilesRecursive()
+  })
+
+  onMount(() => {
+    const stopWatcher = sdk.event.listen((event) => {
+      const details = (event as any).details as { type?: string; properties?: unknown } | undefined
+      if (!details || details.type !== "file.watcher.updated") return
+      const props =
+        details.properties && typeof details.properties === "object"
+          ? (details.properties as Record<string, unknown>)
+          : undefined
+      const kind = typeof props?.event === "string" ? props.event : undefined
+      if (kind === "add" || kind === "unlink" || kind === "change") {
+        queueFileTreeRefresh(180)
+      }
+    })
+    onCleanup(stopWatcher)
+    onCleanup(() => {
+      if (fileTreeRefreshTimer !== undefined) window.clearTimeout(fileTreeRefreshTimer)
+    })
   })
 
   // ─── Chat → Editor/Preview sync ──────────────────────────────────────
@@ -551,7 +823,10 @@ export default function PaperSession() {
     const existingIdx = state.files.findIndex((f) => f.path === relativePath || f.name === fileName)
     if (existingIdx >= 0) {
       setState("files", existingIdx, "content", content)
-      setState("files", existingIdx, "path", relativePath)
+      // Only update path if the new relativePath is shorter (more relative) — don't overwrite short relative with full absolute
+      if (relativePath.length <= (state.files[existingIdx]?.path?.length ?? Infinity)) {
+        setState("files", existingIdx, "path", relativePath)
+      }
     } else {
       setState("files", (files) => [
         ...files,
@@ -601,8 +876,25 @@ export default function PaperSession() {
         // ── Write tool: update file tree + editor ──
         if (toolName === "write" || toolName === "edit") {
           const filePath = String(input.filePath || input.file_path || metadata.filepath || "")
+          const rawPath = toolState.title || filePath
+
+          // Normalize to a relative path by stripping sdk.directory prefix
+          const dir = sdk.directory || ""
+          let relativePath = rawPath
+          if (dir && relativePath.startsWith(dir)) {
+            relativePath = relativePath.slice(dir.length).replace(/^\/+/, "")
+          }
+          // Also handle paths missing the leading slash (e.g. "Users/me/project/main.tex")
+          const dirNoLeadingSlash = dir.replace(/^\//, "")
+          if (dirNoLeadingSlash && relativePath.startsWith(dirNoLeadingSlash)) {
+            relativePath = relativePath.slice(dirNoLeadingSlash.length).replace(/^\/+/, "")
+          }
+          // If still absolute or empty, fall back to basename only
+          if (!relativePath || relativePath.startsWith("/")) {
+            relativePath = filePath.split("/").pop() || filePath
+          }
+
           const content = input.content != null ? String(input.content) : null
-          const relativePath = toolState.title || filePath.split("/").pop() || filePath
 
           if (relativePath) {
             syncedToolCalls.add(toolPart.callID || toolPart.id)
@@ -615,16 +907,15 @@ export default function PaperSession() {
                 if (diskContent) {
                   syncFileToTree(relativePath, diskContent)
                 } else {
-                  // At minimum, add file to tree so user sees it
+                  // File exists on disk but content unavailable — add to tree without placeholder
                   const fileName = relativePath.split("/").pop() || relativePath
-                  const existingIdx = state.files.findIndex((f) => f.path === relativePath)
+                  const existingIdx = state.files.findIndex((f) => f.path === relativePath || f.name === fileName)
                   if (existingIdx < 0) {
                     setState("files", (files) => [
                       ...files,
-                      { name: fileName, path: relativePath, type: "file" as const, content: `% File written by AI: ${relativePath}\n% Click to refresh content from disk.` },
+                      { name: fileName, path: relativePath, type: "file" as const, content: "" },
                     ])
                   }
-                  // Still open .tex files
                   if (relativePath.endsWith(".tex")) {
                     setState("activeFile", relativePath)
                   }
@@ -644,6 +935,8 @@ export default function PaperSession() {
 
           if (pdfData) {
             setState("pdfData", pdfData)
+            setState("pdfSourceType", "compiled")
+            setState("pdfSourcePath", String(metadata.mainFile || state.activeFile || ""))
             setState("compilationError", undefined)
           } else if (success === false) {
             setState("compilationError", toolState.output || "Compilation failed")
@@ -703,6 +996,100 @@ export default function PaperSession() {
     }
   }
 
+  // ─── Auto-fix common LaTeX errors ────────────────────────────────────────
+  // Returns { fixed: string; message: string } if a fix was applied, else null.
+  const tryAutoFix = (errorMsg: string, content: string): { fixed: string; message: string } | null => {
+    // Fix: "Option clash for package hyperref"
+    // Cause: document class already loads hyperref with one option set,
+    //        then \usepackage[...]{hyperref} tries to load it again with different options.
+    // Fix:   Replace all \usepackage[...]{hyperref} with \hypersetup{...},
+    //        and remove bare \usepackage{hyperref}.
+    if (/option clash for package hyperref/i.test(errorMsg)) {
+      const lines = content.split("\n")
+      let firstHyperref = false // track whether the class already loads it (always true for CAS templates)
+      let changed = false
+      const result = lines.map((line) => {
+        const trimmed = line.trim()
+        const indent = line.match(/^(\s*)/)?.[1] ?? ""
+        // Match \usepackage[opts]{hyperref} or \usepackage{hyperref}
+        const withOpts = trimmed.match(/^\\usepackage\[([^\]]+)\]\{hyperref\}/)
+        const bare = /^\\usepackage\{hyperref\}/.test(trimmed)
+        if (withOpts) {
+          changed = true
+          firstHyperref = true
+          // Convert to \hypersetup so it works after the class has loaded hyperref
+          return `${indent}\\hypersetup{${withOpts[1]}} % auto-fixed: option clash`
+        }
+        if (bare && firstHyperref) {
+          changed = true
+          return `${indent}% \\usepackage{hyperref} % auto-fixed: duplicate removed`
+        }
+        if (bare) {
+          firstHyperref = true
+        }
+        return line
+      })
+      if (changed) {
+        return {
+          fixed: result.join("\n"),
+          message: "Auto-fixed: replaced duplicate \\usepackage{hyperref} with \\hypersetup",
+        }
+      }
+    }
+
+    // Fix: acmart/newtxmath already defines \Bbbk, explicit amssymb can conflict.
+    if (/command\s+[`'"]?\\Bbbk[`'"]?\s+already defined/i.test(errorMsg)) {
+      const lines = content.split("\n")
+      let changed = false
+      const result = lines.map((line) => {
+        const trimmed = line.trim()
+        const indent = line.match(/^(\s*)/)?.[1] ?? ""
+
+        if (/^\\usepackage\{amsmath,amssymb\}\s*$/i.test(trimmed)) {
+          changed = true
+          return `${indent}\\usepackage{amsmath} % auto-fixed: remove amssymb conflict with acmart`
+        }
+        if (/^\\usepackage(?:\[[^\]]*\])?\{amssymb\}\s*$/i.test(trimmed)) {
+          changed = true
+          return `${indent}% ${trimmed} % auto-fixed: removed due to acmart conflict`
+        }
+        return line
+      })
+      if (changed) {
+        return {
+          fixed: result.join("\n"),
+          message: "Auto-fixed: removed amssymb conflict (\\Bbbk already defined)",
+        }
+      }
+    }
+
+    // Fix: \xspace used in custom commands but package missing.
+    if (/undefined control sequence/i.test(errorMsg) && /\\xspace/.test(errorMsg) && !/\\usepackage(?:\[[^\]]*\])?\{xspace\}/i.test(content)) {
+      const insertion = "\\usepackage{xspace} % auto-fixed: required by \\xspace commands\n\n\\begin{document}"
+      const fixed = content.replace(/\\begin\{document\}/, insertion)
+      if (fixed !== content) {
+        return {
+          fixed,
+          message: "Auto-fixed: added \\usepackage{xspace}",
+        }
+      }
+    }
+
+    return null
+  }
+
+  // Write patched content to disk so compile-dir picks it up
+  const writePatchedFile = async (filePath: string, content: string): Promise<void> => {
+    try {
+      const res = await fetch(writeUrl(), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: filePath, content }),
+      })
+      if (res.ok) queueFileTreeRefresh(80)
+    } catch {}
+  }
+
   // Handle compile
   const handleCompile = async () => {
     setState("compiling", true)
@@ -719,12 +1106,18 @@ export default function PaperSession() {
             : docxFile.content
           const result = await compileDocx(base64)
           setState("compilationTime", result.compilationTime)
-          if (result.log) setState("compilationLog", result.log)
-          if (result.success && result.pdfDataUrl) {
+          setState("compilationLog", result.log ?? "")
+          if (result.pdfDataUrl) {
             setState("pdfData", result.pdfDataUrl)
+            setState("pdfSourceType", "compiled")
+            setState("pdfSourcePath", state.activeFile)
+          }
+          if (result.success) {
             setState("compilationError", undefined)
-          } else {
+          } else if (!result.pdfDataUrl) {
             setState("compilationError", result.error || "DOCX compilation failed")
+          } else {
+            setState("compilationError", result.error || "DOCX conversion has issues, showing generated PDF.")
           }
         } else {
           setState("compilationError", "No DOCX content loaded")
@@ -732,16 +1125,46 @@ export default function PaperSession() {
         return
       }
 
+      // Determine the main .tex file to compile.
+      // Priority: (1) selected/active .tex file, (2) main.tex, (3) any .tex
+      const findMainTex = (): string => {
+        if (state.activeFile.endsWith(".tex")) return state.activeFile
+        const allTex: string[] = []
+        const walkTex = (files: typeof state.files) => {
+          for (const f of files) {
+            if (f.type === "file" && f.name.endsWith(".tex")) allTex.push(f.path)
+            else if (f.children) walkTex(f.children)
+          }
+        }
+        walkTex(state.files)
+        return allTex.find((p) => p.split("/").pop() === "main.tex") ?? allTex[0] ?? state.activeFile
+      }
+      const mainTexFile = findMainTex()
+
+      // Guard: must have a valid .tex file to compile
+      if (!mainTexFile || !mainTexFile.endsWith(".tex")) {
+        setState("compilationError", "No .tex file found. Create a LaTeX file first.")
+        return
+      }
+
       // Recursively collect ALL file nodes (path + cached content) from the tree
       const dir = projectDirectory()
       const dirPrefix = dir.endsWith("/") ? dir : dir + "/"
+      const dirPrefixNoSlash = dirPrefix.replace(/^\//, "")   // e.g. "Users/danieltang/.../pst1/"
+
+      // Normalize a stored path (which may be absolute or pseudo-absolute) to a relative path
+      const toRelPath = (p: string): string => {
+        if (p.startsWith(dirPrefix)) return p.slice(dirPrefix.length)
+        if (p.startsWith(dirPrefixNoSlash)) return p.slice(dirPrefixNoSlash.length)
+        return p
+      }
 
       type FileNode = { path: string; content: string | undefined }
       const fileNodes: FileNode[] = []
       const walkNodes = (files: typeof state.files) => {
         for (const f of files) {
           if (f.type === "file") {
-            fileNodes.push({ path: f.path, content: f.content || undefined })
+            fileNodes.push({ path: toRelPath(f.path), content: f.content || undefined })
           } else if (f.children) {
             walkNodes(f.children)
           }
@@ -773,35 +1196,126 @@ export default function PaperSession() {
       )
 
       // Build ProjectFile array with relative paths for the compiler
-      const allFiles: ProjectFile[] = fileNodes.map((node) => ({
-        path: node.path.startsWith(dirPrefix)
-          ? node.path.slice(dirPrefix.length)
-          : node.path.split("/").pop() || node.path,
-        content: node.content || "",
-        isBinary: /\.(png|jpg|jpeg|gif|eps|pdf|docx|tiff)$/i.test(node.path),
-      }))
+      // Exclude binary PDF files from the upload payload — they aren't needed by LaTeX
+      const allFiles: ProjectFile[] = fileNodes
+        .filter((node) => !isPdfFile(node.path))
+        .map((node) => ({
+          path: node.path,
+          content: node.content || "",
+          isBinary: /\.(png|jpg|jpeg|gif|eps|docx|tiff)$/i.test(node.path),
+        }))
 
-      // Inject current editor content into the active file (unsaved edits)
-      const activeRel = state.activeFile.startsWith(dirPrefix)
-        ? state.activeFile.slice(dirPrefix.length)
-        : state.activeFile.split("/").pop() || state.activeFile
+      // Compute relative path of the main tex file to compile
+      const mainRel = toRelPath(mainTexFile)
 
-      const activeIdx = allFiles.findIndex((f) => f.path === activeRel)
-      if (activeIdx >= 0) {
-        allFiles[activeIdx].content = state.editorContent
-      } else if (state.editorContent) {
-        allFiles.push({ path: activeRel, content: state.editorContent, isBinary: false })
+      // If preview currently points to another file (or to a manually opened PDF file),
+      // clear it so compile failures never show an unrelated document.
+      const currentPdfSourceRel = state.pdfSourcePath ? toRelPath(state.pdfSourcePath) : ""
+      if (
+        state.pdfSourceType === "file" ||
+        (state.pdfSourceType === "compiled" && currentPdfSourceRel && currentPdfSourceRel !== mainRel)
+      ) {
+        setState("pdfData", undefined)
+        setState("pdfSourceType", undefined)
+        setState("pdfSourcePath", undefined)
       }
 
-      const result = await compileLatex(activeRel, allFiles)
-      setState("compilationTime", result.compilationTime)
-      if (result.log) setState("compilationLog", result.log)
+      // If active file is a .tex, write current editor content to disk first
+      if (state.activeFile.endsWith(".tex") && state.editorContent) {
+        await writePatchedFile(toRelPath(state.activeFile), state.editorContent)
+        // Inject into allFiles for the upload fallback (inject into the active file slot)
+        const activeRelPath = toRelPath(state.activeFile)
+        const activeIdx = allFiles.findIndex((f) => f.path === activeRelPath)
+        if (activeIdx >= 0) allFiles[activeIdx].content = state.editorContent
+        else allFiles.push({ path: activeRelPath, content: state.editorContent, isBinary: false })
+      }
 
-      if (result.success && result.pdfDataUrl) {
+      // Pass project directory so backend can read files directly (no upload needed)
+      const result = await compileLatex(mainRel, allFiles, dir, serverBaseUrl())
+      setState("compilationTime", result.compilationTime)
+      setState("compilationLog", result.log ?? "")
+
+      if (result.pdfDataUrl) {
         setState("pdfData", result.pdfDataUrl)
+        setState("pdfSourceType", "compiled")
+        setState("pdfSourcePath", mainRel)
+      }
+
+      if (result.success) {
         setState("compilationError", undefined)
+      } else if (result.pdfDataUrl) {
+        setState("compilationError", result.error || "Compilation has errors, showing generated PDF.")
       } else {
-        setState("compilationError", result.error || "Compilation failed")
+        // Try auto-fix for known fixable errors, then retry once
+        const errorMsg = result.error || result.log || ""
+        const fix = tryAutoFix(errorMsg, state.editorContent)
+        if (fix) {
+          // Apply fix to editor and disk, then recompile
+          setState("editorContent", fix.fixed)
+          syncFileToTree(mainRel, fix.fixed)
+          await writePatchedFile(mainRel, fix.fixed)
+
+          // Update allFiles with fixed content so fallback upload path also works
+          const retryIdx = allFiles.findIndex((f) => f.path === mainRel)
+          if (retryIdx >= 0) allFiles[retryIdx].content = fix.fixed
+          else allFiles.push({ path: mainRel, content: fix.fixed, isBinary: false })
+
+          const retryResult = await compileLatex(mainRel, allFiles, dir, serverBaseUrl())
+          setState("compilationTime", retryResult.compilationTime)
+          setState("compilationLog", retryResult.log ?? "")
+
+          if (retryResult.pdfDataUrl) {
+            setState("pdfData", retryResult.pdfDataUrl)
+            setState("pdfSourceType", "compiled")
+            setState("pdfSourcePath", mainRel)
+          }
+
+          if (retryResult.success) {
+            setState("compilationError", undefined)
+            if (retryResult.pdfDataUrl) {
+              showToast({ variant: "success", icon: "circle-check", title: fix.message })
+            }
+          } else if (retryResult.pdfDataUrl) {
+            setState("compilationError", retryResult.error || "Compilation has errors, showing generated PDF.")
+          } else {
+            // Try one more pass for chained common errors
+            const secondFix = tryAutoFix(retryResult.error || retryResult.log || "", fix.fixed)
+            if (secondFix) {
+              setState("editorContent", secondFix.fixed)
+              syncFileToTree(mainRel, secondFix.fixed)
+              await writePatchedFile(mainRel, secondFix.fixed)
+
+              const finalIdx = allFiles.findIndex((f) => f.path === mainRel)
+              if (finalIdx >= 0) allFiles[finalIdx].content = secondFix.fixed
+              else allFiles.push({ path: mainRel, content: secondFix.fixed, isBinary: false })
+
+              const finalResult = await compileLatex(mainRel, allFiles, dir, serverBaseUrl())
+              setState("compilationTime", finalResult.compilationTime)
+              setState("compilationLog", finalResult.log ?? "")
+
+              if (finalResult.pdfDataUrl) {
+                setState("pdfData", finalResult.pdfDataUrl)
+                setState("pdfSourceType", "compiled")
+                setState("pdfSourcePath", mainRel)
+              }
+
+              if (finalResult.success) {
+                setState("compilationError", undefined)
+                if (finalResult.pdfDataUrl) {
+                  showToast({ variant: "success", icon: "circle-check", title: secondFix.message })
+                }
+              } else if (finalResult.pdfDataUrl) {
+                setState("compilationError", finalResult.error || "Compilation has errors, showing generated PDF.")
+              } else {
+                setState("compilationError", finalResult.error || "Compilation failed")
+              }
+            } else {
+              setState("compilationError", retryResult.error || "Compilation failed")
+            }
+          }
+        } else {
+          setState("compilationError", result.error || "Compilation failed")
+        }
       }
     } catch (e: any) {
       setState("compilationError", e.message || "Compilation failed")
@@ -810,12 +1324,33 @@ export default function PaperSession() {
     }
   }
 
+  // Fix LaTeX error with AI: fill chat with error context and auto-submit
+  const handleFixError = (entry: LogEntry) => {
+    const lines: string[] = ["Fix this LaTeX compilation error in my paper:"]
+    lines.push("")
+    lines.push(`**Error:** ${entry.message}`)
+    if (entry.file) lines.push(`**File:** ${entry.file}${entry.line ? `, line ${entry.line}` : ""}`)
+    if (entry.context) {
+      lines.push("")
+      lines.push("**Context:**")
+      lines.push("```")
+      lines.push(entry.context.trim())
+      lines.push("```")
+    }
+    lines.push("")
+    lines.push("Please fix the .tex file so it compiles successfully.")
+    const text = lines.join("\n")
+    prompt.set([{ type: "text", content: text, start: 0, end: text.length }])
+    // Auto-submit after reactive update settles
+    setTimeout(() => {
+      document.querySelector<HTMLButtonElement>('[data-action="prompt-submit"]')?.click()
+    }, 80)
+  }
+
   // Log counts for badge display in PDF toolbar
-  const logCounts = createMemo(() => {
-    const log = state.compilationLog
-    if (!log) return { errors: 0, warnings: 0, info: 0 }
-    return countLogEntries(parseLatexLog(log))
-  })
+  const parsedLogEntries = createMemo(() => parseLatexLog(state.compilationLog ?? ""))
+  const logCounts = createMemo(() => countLogEntries(parsedLogEntries()))
+  const undefinedCitationCount = createMemo(() => countUndefinedCitationWarnings(parsedLogEntries()))
 
   // Auto-compile once — wait until files AND editor content are both ready
   const [autoCompiled, setAutoCompiled] = createSignal(false)
@@ -845,6 +1380,51 @@ export default function PaperSession() {
     }
 
     setState("activeFile", f.path)
+
+    // Avoid stale preview mismatch:
+    // - when switching away from an opened .pdf file, clear that preview
+    // - when switching between different .tex files, clear preview from another source file
+    if (!isPdfFile(f.path)) {
+      if (state.pdfSourceType === "file") {
+        setState("pdfData", undefined)
+        setState("pdfSourceType", undefined)
+        setState("pdfSourcePath", undefined)
+      } else if (
+        f.path.endsWith(".tex") &&
+        state.pdfSourceType === "compiled" &&
+        state.pdfSourcePath &&
+        state.pdfSourcePath !== f.path
+      ) {
+        setState("pdfData", undefined)
+        setState("pdfSourceType", undefined)
+        setState("pdfSourcePath", undefined)
+      }
+    }
+
+    // PDF files: load into the PDF viewer, not the text editor
+    if (isPdfFile(f.path)) {
+      setState("editorContent", "")
+      // Use cached content if available
+      const cached = f.content || state.files.find((fl) => fl.path === f.path)?.content
+      if (cached && cached.startsWith("data:")) {
+        setState("pdfData", cached)
+        setState("pdfSourceType", "file")
+        setState("pdfSourcePath", f.path)
+        return
+      }
+      try {
+        const res = await sdk.client.file.read({ path: f.path })
+        if (res.data?.content) {
+          const dataUrl = `data:application/pdf;base64,${res.data.content}`
+          setState("pdfData", dataUrl)
+          setState("pdfSourceType", "file")
+          setState("pdfSourcePath", f.path)
+          const idx = state.files.findIndex((fl) => fl.path === f.path)
+          if (idx >= 0) setState("files", idx, "content", dataUrl)
+        }
+      } catch {}
+      return
+    }
 
     // If content is already loaded, use it
     if (f.content) {
@@ -887,6 +1467,36 @@ export default function PaperSession() {
     }
   }
 
+  // Create a new file in the project and refresh the tree.
+  const handleFileCreate = async (parentPath: string, name: string) => {
+    const trimmed = name.trim() || "untitled.tex"
+    const fileName = trimmed.split("/").filter(Boolean).pop() || "untitled.tex"
+    const targetPath = parentPath ? `${parentPath.replace(/\/+$/, "")}/${fileName}` : fileName
+    const initialContent = fileName.endsWith(".tex") ? "% New LaTeX file\n" : ""
+
+    try {
+      const res = await fetch(writeUrl(), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: targetPath, content: initialContent }),
+      })
+      if (!res.ok) {
+        showToast({ variant: "error", title: "Create failed", description: `Could not create ${targetPath}` })
+        return
+      }
+
+      if (fileName.endsWith(".tex")) {
+        setState("activeFile", targetPath)
+        setState("editorContent", initialContent)
+      }
+
+      queueFileTreeRefresh(40)
+      showToast({ variant: "success", icon: "circle-check", title: "File created", description: targetPath })
+    } catch (e: any) {
+      showToast({ variant: "error", title: "Create failed", description: e?.message || `Could not create ${targetPath}` })
+    }
+  }
+
   // ─── Handle image drop from chat to file tree ──────────────────────────
   const handleImageDrop = async (data: ImageDropData, targetFolder: string) => {
     const { src, fileName } = data
@@ -902,8 +1512,7 @@ export default function PaperSession() {
 
     try {
       // Write binary file via backend API
-      const writeUrl = `/session/${params.id}/file/write`
-      const res = await fetch(`http://127.0.0.1:4096${writeUrl}?directory=${encodeURIComponent(sdk.directory || "")}`, {
+      const res = await fetch(`${serverBaseUrl()}/file?directory=${encodeURIComponent(sdk.directory || "")}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -980,6 +1589,149 @@ export default function PaperSession() {
       title: "Image saved",
       description: `${filePath}`,
     })
+    queueFileTreeRefresh(60)
+  }
+
+  // ─── File delete / rename handlers ──────────────────────────────────
+  const handleFileDelete = async (file: PaperFile) => {
+    try {
+      const res = await fetch(`${serverBaseUrl()}/file?directory=${encodeURIComponent((sdk as any).directory || "")}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: file.path }),
+      })
+      if (!res.ok && res.status !== 404) {
+        showToast({ variant: "error", title: "Delete failed", description: `Could not delete ${file.name}` })
+        return
+      }
+    } catch {
+      showToast({ variant: "error", title: "Delete failed", description: `Could not delete ${file.name}` })
+      return
+    }
+
+    const nextFiles = removeFromTree(state.files, file.path)
+    setState("files", nextFiles)
+
+    const removedPrefix = `${file.path}/`
+    const activeWasRemoved = state.activeFile === file.path || state.activeFile.startsWith(removedPrefix)
+    if (activeWasRemoved) {
+      const remaining = flattenTreeFiles(nextFiles)
+      const nextActive = remaining.find((f) => f.path.endsWith(".tex"))?.path ?? remaining[0]?.path ?? ""
+      setState("activeFile", nextActive)
+      if (!nextActive) {
+        setState("editorContent", "")
+      }
+    }
+
+    if (state.pdfSourcePath === file.path || state.pdfSourcePath?.startsWith(removedPrefix)) {
+      setState("pdfData", undefined)
+      setState("pdfSourceType", undefined)
+      setState("pdfSourcePath", undefined)
+    }
+
+    showToast({ variant: "success", icon: "circle-check", title: "Deleted", description: file.name })
+    queueFileTreeRefresh(60)
+  }
+
+  const handleFileRename = async (file: PaperFile, newName: string) => {
+    const trimmed = newName.trim()
+    if (!trimmed || trimmed === file.name) return
+
+    // Build new path by replacing the last segment.
+    const lastSlash = file.path.lastIndexOf("/")
+    const newPath = lastSlash >= 0 ? `${file.path.slice(0, lastSlash + 1)}${trimmed}` : trimmed
+
+    try {
+      const res = await fetch(`${serverBaseUrl()}/file?directory=${encodeURIComponent((sdk as any).directory || "")}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: file.path, newPath }),
+      })
+      if (!res.ok) {
+        showToast({ variant: "error", title: "Rename failed", description: `Could not rename ${file.name}` })
+        return
+      }
+    } catch {
+      showToast({ variant: "error", title: "Rename failed", description: `Could not rename ${file.name}` })
+      return
+    }
+
+    setState("files", (files) => renameInTree(files, file.path, newPath, trimmed))
+
+    if (state.activeFile === file.path || state.activeFile.startsWith(`${file.path}/`)) {
+      setState("activeFile", `${newPath}${state.activeFile.slice(file.path.length)}`)
+    }
+
+    if (state.pdfSourcePath === file.path || state.pdfSourcePath?.startsWith(`${file.path}/`)) {
+      setState("pdfSourcePath", `${newPath}${(state.pdfSourcePath || "").slice(file.path.length)}`)
+    }
+
+    showToast({ variant: "success", icon: "circle-check", title: "Renamed", description: `${file.name} → ${trimmed}` })
+    queueFileTreeRefresh(60)
+  }
+
+  const handleFileMove = async (file: PaperFile, targetParentPath: string) => {
+    const normalizedParent = targetParentPath.replace(/^\/+|\/+$/g, "")
+    const newPath = normalizedParent ? `${normalizedParent}/${file.name}` : file.name
+    if (newPath === file.path) return
+
+    if (file.type === "folder" && (normalizedParent === file.path || normalizedParent.startsWith(`${file.path}/`))) {
+      showToast({ variant: "error", title: "Move failed", description: "Cannot move a folder into itself." })
+      return
+    }
+
+    let destinationExists = false
+    const ownPrefix = `${file.path}/`
+    const walk = (nodes: PaperFile[]) => {
+      for (const node of nodes) {
+        const isMovingNode = node.path === file.path || node.path.startsWith(ownPrefix)
+        if (!isMovingNode && node.path === newPath) {
+          destinationExists = true
+          return
+        }
+        if (node.children?.length) {
+          walk(node.children)
+          if (destinationExists) return
+        }
+      }
+    }
+    walk(state.files)
+    if (destinationExists) {
+      showToast({
+        variant: "error",
+        title: "Move failed",
+        description: `${newPath} already exists`,
+      })
+      return
+    }
+
+    try {
+      const res = await fetch(`${serverBaseUrl()}/file?directory=${encodeURIComponent((sdk as any).directory || "")}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: file.path, newPath }),
+      })
+      if (!res.ok) {
+        showToast({ variant: "error", title: "Move failed", description: `Could not move ${file.name}` })
+        return
+      }
+    } catch {
+      showToast({ variant: "error", title: "Move failed", description: `Could not move ${file.name}` })
+      return
+    }
+
+    setState("files", (files) => renameInTree(files, file.path, newPath, file.name))
+
+    if (state.activeFile === file.path || state.activeFile.startsWith(`${file.path}/`)) {
+      setState("activeFile", `${newPath}${state.activeFile.slice(file.path.length)}`)
+    }
+
+    if (state.pdfSourcePath === file.path || state.pdfSourcePath?.startsWith(`${file.path}/`)) {
+      setState("pdfSourcePath", `${newPath}${(state.pdfSourcePath || "").slice(file.path.length)}`)
+    }
+
+    showToast({ variant: "success", icon: "circle-check", title: "Moved", description: `${file.name} → ${newPath}` })
+    queueFileTreeRefresh(60)
   }
 
   // ─── File upload handler (from MenuBar) ─────────────────────────────
@@ -1016,6 +1768,7 @@ export default function PaperSession() {
           } else {
             showToast({ variant: "success", icon: "circle-check", title: "File uploaded", description: file.name })
           }
+          queueFileTreeRefresh(80)
         } else {
           // Read as base64 for binary files (images, pdf, etc.)
           const reader = new FileReader()
@@ -1041,6 +1794,7 @@ export default function PaperSession() {
           }
 
           showToast({ variant: "success", icon: "circle-check", title: "File uploaded", description: file.name })
+          queueFileTreeRefresh(80)
         }
       } catch (err) {
         showToast({ variant: "error", title: "Upload failed", description: `Could not upload ${file.name}` })
@@ -1641,7 +2395,19 @@ export default function PaperSession() {
           class="shrink-0 h-full overflow-hidden bg-background-base"
           style={{ width: fileTreeCollapsed() ? "0" : `${widths.fileTree}px` }}
         >
-          <PaperFileTree files={state.files} activeFile={state.activeFile} onFileSelect={handleFileSelect} onImageDrop={handleImageDrop} onUploadTemplate={handleUploadFile} />
+          <PaperFileTree
+            files={state.files}
+            activeFile={state.activeFile}
+            onFileSelect={handleFileSelect}
+            onFileCreate={handleFileCreate}
+            onRefresh={handleRefreshFiles}
+            refreshing={fileTreeRefreshing()}
+            onImageDrop={handleImageDrop}
+            onUploadTemplate={handleUploadFile}
+            onFileDelete={handleFileDelete}
+            onFileRename={handleFileRename}
+            onFileMove={handleFileMove}
+          />
         </div>
 
         {/* ── Drag Handle: File Tree | Editor ─────────────────────────── */}
@@ -1668,36 +2434,62 @@ export default function PaperSession() {
               <span class="text-11-medium text-text-weak">{state.activeFile}</span>
             </div>
             <div class="flex-1 min-h-0">
-              <Show
-                when={!isImageFile(state.activeFile)}
-                fallback={
-                  <ImagePreviewPanel
-                    filePath={state.activeFile}
-                    imageData={activeImageData()}
-                    onEditRequest={(instruction: string, region?: { x: number; y: number; w: number; h: number }) => {
-                      const regionStr = region
-                        ? ` [REGION: x=${Math.round(region.x)}, y=${Math.round(region.y)}, w=${Math.round(region.w)}, h=${Math.round(region.h)}]`
-                        : ""
-                      const imageDataUrl = activeImageData()
-                      const editPrompt = imageDataUrl
-                        ? `@image Edit the image at ${state.activeFile}${regionStr}: ${instruction}`
-                        : `@image ${instruction}`
-                      if (typeof window !== "undefined") {
-                        ;(window as any).__paperStudioEditImage = {
-                          imageData: imageDataUrl,
-                          filePath: state.activeFile,
-                          region: region || null,
-                        }
+              <Show when={isPdfFile(state.activeFile)}>
+                <div class="h-full flex flex-col items-center justify-center gap-3 text-center p-8 text-text-weak">
+                  <svg width="32" height="32" viewBox="0 0 32 32" fill="none" class="text-red-400">
+                    <rect x="4" y="2" width="20" height="26" rx="2" stroke="currentColor" stroke-width="1.5" />
+                    <path d="M8 10h12M8 14h8M8 18h10" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+                    <path d="M16 2v6h6" stroke="currentColor" stroke-width="1.2" />
+                  </svg>
+                  <div class="text-13-medium text-text-base">{state.activeFile.split("/").pop()}</div>
+                  <div class="text-12-regular">PDF displayed in preview panel →</div>
+                </div>
+              </Show>
+              <Show when={isImageFile(state.activeFile)}>
+                <ImagePreviewPanel
+                  filePath={state.activeFile}
+                  imageData={activeImageData()}
+                  onEditRequest={(request: ImageEditRequest) => {
+                    const region = request.region
+                    const regionStr = region
+                      ? ` [REGION: x=${Math.round(region.x)}, y=${Math.round(region.y)}, w=${Math.round(region.w)}, h=${Math.round(region.h)}]`
+                      : ""
+                    const annotationSummary = request.annotations
+                      .map((annotation) => {
+                        const r = annotation.region
+                        const bounds = `x=${Math.round(r.x)}, y=${Math.round(r.y)}, w=${Math.round(r.w)}, h=${Math.round(r.h)}`
+                        return annotation.instruction
+                          ? `${annotation.shape}(${bounds}) -> ${annotation.instruction}`
+                          : `${annotation.shape}(${bounds})`
+                      })
+                      .join("; ")
+                    const imageDataUrl = activeImageData()
+                    const instruction = request.instruction.trim() || "Apply the marked edits."
+                    const editPrompt = imageDataUrl
+                      ? `@image Edit the image at ${state.activeFile}${regionStr}: ${instruction}`
+                      : `@image ${instruction}`
+                    const promptWithContext = annotationSummary
+                      ? `${editPrompt} [ANNOTATIONS: ${annotationSummary}] [COLLABORATIVE: ${request.collaborative ? "ON" : "OFF"}]`
+                      : `${editPrompt} [COLLABORATIVE: ${request.collaborative ? "ON" : "OFF"}]`
+                    if (typeof window !== "undefined") {
+                      ;(window as any).__paperStudioEditImage = {
+                        imageData: imageDataUrl,
+                        filePath: state.activeFile,
+                        region: request.region || null,
+                        annotations: request.annotations,
+                        collaborative: request.collaborative,
+                        model: request.model,
                       }
-                      if (inputRef) {
-                        inputRef.textContent = editPrompt
-                        inputRef.dispatchEvent(new Event("input", { bubbles: true }))
-                        inputRef.focus()
-                      }
-                    }}
-                  />
-                }
-              >
+                    }
+                    if (inputRef) {
+                      inputRef.textContent = promptWithContext
+                      inputRef.dispatchEvent(new Event("input", { bubbles: true }))
+                      inputRef.focus()
+                    }
+                  }}
+                />
+              </Show>
+              <Show when={!isPdfFile(state.activeFile) && !isImageFile(state.activeFile)}>
                 <LatexEditor
                   content={state.editorContent}
                   onChange={handleEditorChange}
@@ -1745,7 +2537,9 @@ export default function PaperSession() {
               log={state.compilationLog}
               logErrorCount={logCounts().errors}
               logWarningCount={logCounts().warnings}
+              undefinedCitationCount={undefinedCitationCount()}
               compileLabel={isActiveDocx() ? "Convert to PDF" : "Compile"}
+              onFixError={handleFixError}
             />
             <Show when={isActiveDocx()}>
               <div class="flex items-center h-8 px-3 border-t border-border-weak-base bg-background-stronger shrink-0">
@@ -1864,7 +2658,10 @@ export default function PaperSession() {
                 <div
                   ref={setChatScrollRef}
                   class="flex-1 min-h-0 overflow-y-auto"
-                  onScroll={() => autoScroll.handleScroll()}
+                  onScroll={() => {
+                    autoScroll.handleScroll()
+                    schedulePersistChatScroll()
+                  }}
                 >
                   <div
                     ref={(el) => {
@@ -1879,7 +2676,10 @@ export default function PaperSession() {
                         scroll={{ overflow: false, bottom: true }}
                         onResumeScroll={() => autoScroll.forceScrollToBottom()}
                         setScrollRef={setChatScrollRef}
-                        onScheduleScrollState={() => {}}
+                        onScheduleScrollState={() => {
+                          autoScroll.handleScroll()
+                          schedulePersistChatScroll()
+                        }}
                         onAutoScrollHandleScroll={() => autoScroll.handleScroll()}
                         onMarkScrollGesture={() => {}}
                         hasScrollGesture={() => false}

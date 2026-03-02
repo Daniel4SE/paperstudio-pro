@@ -3,6 +3,7 @@ import * as pdfjsLib from "pdfjs-dist"
 import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist"
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url"
 import { CompilationLogPanel } from "./compilation-log-panel"
+import type { LogEntry } from "./latex-log-parser"
 
 // Use locally bundled worker (avoids CDN dependency and version mismatch)
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl
@@ -30,8 +31,12 @@ export interface PdfPreviewProps {
   logErrorCount?: number
   /** Number of warnings in the compilation log */
   logWarningCount?: number
+  /** Number of undefined citation/reference warnings in the compilation log */
+  undefinedCitationCount?: number
   /** Custom label for the compile button (e.g. "Convert to PDF" for DOCX) */
   compileLabel?: string
+  /** Called when user clicks "Fix" on a log error entry */
+  onFixError?: (entry: LogEntry) => void
 }
 
 export function PdfPreview(props: PdfPreviewProps) {
@@ -151,6 +156,11 @@ export function PdfPreview(props: PdfPreviewProps) {
     return null
   }
 
+  const openLogs = () => {
+    setShowLogs(true)
+    props.onShowLogs?.()
+  }
+
   const toolbar = (): JSX.Element => (
     <div class="flex items-center h-10 px-3 border-b border-border-weak-base bg-background-stronger shrink-0 gap-2">
       {/* 1. Compile button */}
@@ -185,11 +195,36 @@ export function PdfPreview(props: PdfPreviewProps) {
         <div class="w-px h-4 bg-border-weak-base shrink-0" />
       </Show>
 
-      {/* 5. Log badge button */}
+      {/* 5. Undefined citation/reference warning */}
+      <Show when={(props.undefinedCitationCount ?? 0) > 0}>
+        <button
+          class="flex items-center gap-1 px-2 py-1 h-6 rounded border border-[#f59e0b]/45 bg-[#f59e0b]/12 text-[#b45309] text-11-medium hover:bg-[#f59e0b]/18 transition-colors shrink-0"
+          onClick={openLogs}
+          title="Undefined citations or references detected — click to open logs"
+        >
+          <CitationWarningIcon />
+          Citations
+          <span class="px-1 min-w-[16px] h-4 rounded bg-[#f59e0b] text-white text-[10px] leading-4 text-center">
+            {props.undefinedCitationCount}
+          </span>
+        </button>
+      </Show>
+
+      {/* 6. Log badge button */}
       <button
-        class="relative flex items-center justify-center w-7 h-7 text-text-weak hover:text-text-base hover:bg-surface-base rounded transition-colors shrink-0"
-        onClick={() => setShowLogs((v) => !v)}
-        title="View compilation logs"
+        class="relative flex items-center justify-center w-7 h-7 rounded transition-colors shrink-0"
+        classList={{
+          "text-text-strong bg-surface-base": showLogs(),
+          "text-text-weak hover:text-text-base hover:bg-surface-base": !showLogs(),
+        }}
+        onClick={() => {
+          setShowLogs((v) => {
+            const next = !v
+            if (next) props.onShowLogs?.()
+            return next
+          })
+        }}
+        title={showLogs() ? "Back to PDF view" : "View compilation logs"}
       >
         <LogIcon />
         <Show when={logBadgeInfo()}>
@@ -203,10 +238,10 @@ export function PdfPreview(props: PdfPreviewProps) {
         </Show>
       </button>
 
-      {/* 6. Separator */}
+      {/* 7. Separator */}
       <div class="w-px h-4 bg-border-weak-base shrink-0" />
 
-      {/* 7. Page navigation (only when pages exist) */}
+      {/* 8. Page navigation (only when pages exist) */}
       <Show when={totalPages() > 0}>
         <div class="flex items-center gap-1 shrink-0">
           {/* Prev page */}
@@ -252,14 +287,14 @@ export function PdfPreview(props: PdfPreviewProps) {
           <span class="text-11-regular text-text-weak">{totalPages()}</span>
         </div>
 
-        {/* 8. Separator */}
+        {/* 9. Separator */}
         <div class="w-px h-4 bg-border-weak-base shrink-0" />
       </Show>
 
       {/* Spacer */}
       <div class="flex-1" />
 
-      {/* 9-11. Zoom controls */}
+      {/* 10-12. Zoom controls */}
       <div class="flex items-center gap-0.5 shrink-0">
         <button
           class="w-6 h-6 flex items-center justify-center text-12-regular text-text-base hover:bg-surface-base rounded transition-colors"
@@ -280,10 +315,10 @@ export function PdfPreview(props: PdfPreviewProps) {
         </button>
       </div>
 
-      {/* 12. Separator */}
+      {/* 13. Separator */}
       <div class="w-px h-4 bg-border-weak-base shrink-0" />
 
-      {/* 13. Download */}
+      {/* 14. Download */}
       <Show when={props.pdfData}>
         <a
           href={props.pdfData}
@@ -300,82 +335,96 @@ export function PdfPreview(props: PdfPreviewProps) {
   return (
     <div class={`flex flex-col h-full overflow-hidden ${props.class ?? ""}`}>
       {toolbar()}
-      <div ref={(el) => (scrollContainerRef = el)} class="flex-1 min-h-0 overflow-auto bg-[#525659] relative">
-        <Show
-          when={props.pdfData && pdfDoc()}
-          fallback={
-            <div class="h-full flex flex-col items-center justify-center gap-4 text-center p-8">
+      <Show
+        when={showLogs()}
+        fallback={
+          <div ref={(el) => (scrollContainerRef = el)} class="flex-1 min-h-0 overflow-auto bg-[#525659] relative">
+            {/* No-PDF state: error screen or "click compile" prompt */}
+            <Show when={!props.pdfData || !pdfDoc()}>
+              <div class="h-full flex flex-col items-center justify-center gap-4 text-center p-8">
+                <Show when={props.error}>
+                  <div class="max-w-md">
+                    <div class="text-14-medium text-text-strong mb-2">Compilation Error</div>
+                    <pre class="text-12-regular text-text-weak whitespace-pre-wrap text-left bg-surface-base rounded-lg p-4 max-h-64 overflow-auto">
+                      {props.error}
+                    </pre>
+                  </div>
+                </Show>
+                <Show when={!props.error && !props.compiling}>
+                  <div class="flex flex-col items-center gap-3">
+                    <DocumentIcon />
+                    <div class="text-14-regular text-text-weak max-w-56">
+                      Click <strong>Compile</strong> to generate PDF preview
+                    </div>
+                  </div>
+                </Show>
+                <Show when={!props.error && props.compiling}>
+                  <div class="flex flex-col items-center gap-3">
+                    <SpinnerIcon />
+                    <div class="text-14-regular text-text-weak">Compiling...</div>
+                  </div>
+                </Show>
+              </div>
+            </Show>
+
+            {/* PDF view — always shown when pdfData+pdfDoc loaded, regardless of errors */}
+            <Show when={props.pdfData && pdfDoc()}>
+              {/* Error banner: compilation failed but showing previous/partial PDF */}
               <Show when={props.error}>
-                <div class="max-w-md">
-                  <div class="text-14-medium text-text-strong mb-2">Compilation Error</div>
-                  <pre class="text-12-regular text-text-weak whitespace-pre-wrap text-left bg-surface-base rounded-lg p-4 max-h-64 overflow-auto">
-                    {props.error}
-                  </pre>
+                <div class="sticky top-0 z-10 flex items-center gap-2 px-4 py-2 bg-[#3d1515]/90 border-b border-[#ef4444]/30 backdrop-blur-sm">
+                  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" class="shrink-0 text-[#ef4444]">
+                    <path d="M8 2L14.9 14H1.1L8 2z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+                    <path d="M8 7v3M8 11.5v.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                  </svg>
+                  <span class="text-11-medium text-[#ef4444]">Compilation error — showing last successful PDF for this file</span>
+                  <span class="text-11-regular text-[#ef4444]/70 truncate flex-1">{props.error?.split("\n")[0]}</span>
                 </div>
               </Show>
-              <Show when={!props.error && !props.compiling}>
-                <div class="flex flex-col items-center gap-3">
-                  <DocumentIcon />
-                  <div class="text-14-regular text-text-weak max-w-56">
-                    Click <strong>Compile</strong> to generate PDF preview
-                  </div>
-                </div>
-              </Show>
-              <Show when={!props.error && props.compiling}>
-                <div class="flex flex-col items-center gap-3">
-                  <SpinnerIcon />
-                  <div class="text-14-regular text-text-weak">Compiling...</div>
-                </div>
-              </Show>
-            </div>
-          }
-        >
-          {/* All pages stacked vertically — continuous scroll */}
-          <div class="flex flex-col items-center gap-4 py-4">
-            <For each={Array.from({ length: totalPages() }, (_, i) => i)}>
-              {(i) => {
-                let canvas: HTMLCanvasElement | undefined
-                let renderTask: RenderTask | null = null
 
-                // Each page manages its own render — fires after canvas mounts
-                createEffect(on([pdfDoc, scale] as const, async ([doc, s]) => {
-                  if (renderTask) { try { renderTask.cancel() } catch {} renderTask = null }
-                  if (!doc || !canvas) return
-                  try {
-                    const pdfPage = await doc.getPage(i + 1)
-                    const dpr = window.devicePixelRatio || 1
-                    const viewport = pdfPage.getViewport({ scale: s * dpr })
-                    canvas.width = viewport.width
-                    canvas.height = viewport.height
-                    canvas.style.width = `${viewport.width / dpr}px`
-                    canvas.style.height = `${viewport.height / dpr}px`
-                    renderTask = pdfPage.render({ canvas, viewport })
-                    await renderTask.promise
-                    renderTask = null
-                  } catch (e: any) {
-                    if (e?.name !== "RenderingCancelledException") console.error("PDF render error:", e)
-                  }
-                }))
+              {/* All pages stacked vertically — continuous scroll */}
+              <div class="flex flex-col items-center gap-4 py-4">
+                <For each={Array.from({ length: totalPages() }, (_, i) => i)}>
+                  {(i) => {
+                    let canvas: HTMLCanvasElement | undefined
+                    let renderTask: RenderTask | null = null
 
-                onCleanup(() => { try { renderTask?.cancel() } catch {} })
+                    createEffect(on([pdfDoc, scale] as const, async ([doc, s]) => {
+                      if (renderTask) { try { renderTask.cancel() } catch {} renderTask = null }
+                      if (!doc || !canvas) return
+                      try {
+                        const pdfPage = await doc.getPage(i + 1)
+                        const dpr = window.devicePixelRatio || 1
+                        const viewport = pdfPage.getViewport({ scale: s * dpr })
+                        canvas.width = viewport.width
+                        canvas.height = viewport.height
+                        canvas.style.width = `${viewport.width / dpr}px`
+                        canvas.style.height = `${viewport.height / dpr}px`
+                        renderTask = pdfPage.render({ canvas, viewport })
+                        await renderTask.promise
+                        renderTask = null
+                      } catch (e: any) {
+                        if (e?.name !== "RenderingCancelledException") console.error("PDF render error:", e)
+                      }
+                    }))
 
-                return (
-                  <div ref={(el) => (pageRefs[i] = el)}>
-                    <canvas ref={(el) => { canvas = el }} class="shadow-lg" />
-                  </div>
-                )
-              }}
-            </For>
+                    onCleanup(() => { try { renderTask?.cancel() } catch {} })
+
+                    return (
+                      <div ref={(el) => (pageRefs[i] = el)}>
+                        <canvas ref={(el) => { canvas = el }} class="shadow-lg" />
+                      </div>
+                    )
+                  }}
+                </For>
+              </div>
+            </Show>
           </div>
-        </Show>
-
-        {/* Compilation log overlay — positioned below toolbar, over canvas area only */}
-        <Show when={showLogs()}>
-          <div class="absolute inset-0 z-20">
-            <CompilationLogPanel log={props.log} onClose={() => setShowLogs(false)} />
-          </div>
-        </Show>
-      </div>
+        }
+      >
+        <div class="flex-1 min-h-0">
+          <CompilationLogPanel log={props.log} onClose={() => setShowLogs(false)} onFixError={props.onFixError} />
+        </div>
+      </Show>
     </div>
   )
 }
@@ -432,6 +481,15 @@ function LogIcon() {
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
       <rect x="2" y="2" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.3" />
       <path d="M5 5.5h6M5 8h6M5 10.5h4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+    </svg>
+  )
+}
+
+function CitationWarningIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M8 2.1L14 13.5H2L8 2.1z" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round" />
+      <path d="M8 6v3.2M8 11.2v.6" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
     </svg>
   )
 }

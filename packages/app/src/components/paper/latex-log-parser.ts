@@ -16,6 +16,8 @@ export interface LogEntry {
   raw: string
 }
 
+const CITATION_WARNING_MESSAGE = /(undefined citations?|undefined references?|citation\s+["'`].+["'`]\s+is undefined|cross-references?)/i
+
 // ── Patterns ────────────────────────────────────────────────────────────────
 
 const ERROR_PATTERNS: Array<{ regex: RegExp; extract: (m: RegExpMatchArray, line: string) => string }> = [
@@ -34,6 +36,27 @@ const ERROR_PATTERNS: Array<{ regex: RegExp; extract: (m: RegExpMatchArray, line
 ]
 
 const WARNING_PATTERNS: Array<{ regex: RegExp; extract: (m: RegExpMatchArray, line: string) => string }> = [
+  {
+    regex: /Citation [`'"]?([^`'"]+)[`'"]?\s+on page\s+\d+\s+undefined(?:\s+on input line\s+\d+)?/i,
+    extract: (m) => `Citation "${m[1]}" is undefined.`,
+  },
+  {
+    regex: /There were undefined citations\.?/i,
+    extract: () => "There were undefined citations.",
+  },
+  {
+    regex: /There were undefined references\.?/i,
+    extract: () => "There were undefined references.",
+  },
+  {
+    regex: /Label\(s\) may have changed\. Rerun to get cross-references right\.?/i,
+    extract: () => "Labels changed; rerun needed to resolve cross-references.",
+  },
+  {
+    // Tectonic-style warnings, e.g. "warning: main.tex:69: Citation 'foo' on page 2 undefined"
+    regex: /^(?:\[[^\]]+\]\s*)?warning:\s*(.+)$/i,
+    extract: (m) => m[1].trim(),
+  },
   {
     regex: /LaTeX Warning:\s*(.+)/,
     extract: (m) => m[1].trim(),
@@ -77,6 +100,10 @@ const SKIP_PATTERNS = [
 
 /** Extract file path from a line. */
 function extractFile(line: string): string | undefined {
+  // Match "main.tex:69: ..."
+  const colonMatch = line.match(/\b([a-zA-Z0-9_./-]+\.(?:tex|sty|cls|bib|bbl|aux)):\d+\b/)
+  if (colonMatch) return colonMatch[1]
+
   // Match (./path/file.tex  or  ./path/file.tex
   const fileMatch = line.match(/\(?\.\/([^\s,)]+\.\w+)/)
   if (fileMatch) return fileMatch[1]
@@ -90,6 +117,10 @@ function extractFile(line: string): string | undefined {
 
 /** Extract line number from a line. */
 function extractLineNumber(line: string): number | undefined {
+  // "main.tex:69: ..." style
+  const colonMatch = line.match(/(?:^|\s)[a-zA-Z0-9_./-]+\.\w+:(\d+)(?::|\s|$)/)
+  if (colonMatch) return parseInt(colonMatch[1], 10)
+
   // l.142 ...
   const lMatch = line.match(/^l\.(\d+)\s/)
   if (lMatch) return parseInt(lMatch[1], 10)
@@ -276,4 +307,14 @@ export function countLogEntries(entries: LogEntry[]): { errors: number; warnings
     else info++
   }
   return { errors, warnings, info }
+}
+
+export function countUndefinedCitationWarnings(entries: LogEntry[]): number {
+  let count = 0
+  for (const entry of entries) {
+    if (entry.type !== "warning") continue
+    if (!CITATION_WARNING_MESSAGE.test(entry.message)) continue
+    count++
+  }
+  return count
 }

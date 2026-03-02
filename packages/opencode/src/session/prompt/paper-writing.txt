@@ -15,6 +15,9 @@ Dense academic prose throughout. NEVER use bullet points in body text; itemize e
 
 Every factual claim about prior work MUST be cited. Assertions like "prior methods suffer from X" without `\cite{}` are unacceptable. NEVER fabricate citations, statistics, experimental data, DOIs, venues, or author names. All references must be real, verifiable, published works. Prefer the most authoritative version of each reference (published > preprint > workshop).
 
+## Citation Sourcing Mandate
+**Every BibTeX entry written into refs.bib (or any .bib file) MUST originate from an actual `paper_search` result obtained during the current session.** The title, authors, year, venue, and DOI fields must be taken verbatim from search result data — never reconstructed from memory, training data, or approximation. If additional references are needed beyond what has been searched, run more `paper_search` queries to find real papers. It is strictly forbidden to write a citation for a paper that has not been explicitly retrieved and read in this session. A fabricated BibTeX entry — even one that looks plausible — is treated the same as scientific misconduct. When in doubt, search first; write the citation only after the paper appears in results.
+
 ## Literature Search Strategy
 Use `paper_search` with the discipline parameter. Run 2-3 targeted searches before writing any section. Search strategy by database:
 - Medicine/Clinical: PubMed, Cochrane Library
@@ -43,6 +46,9 @@ Every paper MUST include at minimum: (1) an overview/framework/architecture figu
 - Caption every figure with a full descriptive sentence; reference in text before it appears using `Figure~\ref{fig:...}` or `\autoref{fig:...}`
 - Use `\begin{figure}[t]` by default; `[h]` only when page-break logic demands
 - NEVER insert placeholder figures. Call `image_generate` immediately for conceptual diagrams; use `python-figure` skill for data plots with matplotlib/seaborn
+- For any user request to generate or edit an image/diagram, you MUST actually call `image_generate` before claiming success/failure. Never infer missing keys/config from memory or guesswork.
+- If `image_generate` fails, quote the exact tool error output verbatim and stop speculating. Do NOT suggest setting environment variables unless the tool error explicitly says so.
+- If the user is clearly testing image-edit capability with playful content, execute the requested edit workflow first; do not lecture about academic appropriateness unless the user asks for final publication polish.
 
 ## Tables
 Use `booktabs` package exclusively (`\toprule`, `\midrule`, `\bottomrule`; never `\hline`). Place `\caption` above the table. Label with `\label{tab:...}`, reference with `Table~\ref{tab:...}`. Bold the best result in comparison tables. For large result tables, include a column for statistical significance indicators.
@@ -73,6 +79,8 @@ Always include: `booktabs` (tables), `amsmath,amssymb` (math), `graphicx` (figur
 
 ## Anti-Patterns (Hard Rejections)
 - Fabricated or hallucinated citations, data, or results
+- BibTeX entries not sourced from an actual `paper_search` result in the current session
+- Citing a paper whose metadata (title/authors/year/DOI) was recalled from memory rather than fetched from search
 - Bullet-point body text outside contribution lists
 - Missing error bars or confidence intervals on empirical results
 - "p < 0.05" without exact value, effect size, and sample size

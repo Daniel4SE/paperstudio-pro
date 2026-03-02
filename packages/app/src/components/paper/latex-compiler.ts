@@ -9,6 +9,7 @@
 // Siglum CDN URLs (TeX Live 2025 bundles)
 const SIGLUM_CDN = "https://cdn.siglum.org/tl2025"
 const YTOTECH_API = "https://latex.ytotech.com/builds/sync"
+const DEFAULT_BACKEND_BASE_URL = "http://127.0.0.1:4096"
 
 export interface CompileResult {
   success: boolean
@@ -17,7 +18,7 @@ export interface CompileResult {
   error?: string
   log?: string
   compilationTime: number
-  compiler: "siglum-wasm" | "ytotech"
+  compiler: "siglum-wasm" | "ytotech" | "tectonic"
 }
 
 export interface ProjectFile {
@@ -152,6 +153,98 @@ async function compileWithSiglum(
 }
 
 /**
+ * Extract the first meaningful LaTeX error from a compilation log.
+ * Looks for lines starting with "! " which is LaTeX's error marker.
+ */
+function extractLatexError(log: string): string {
+  if (!log) return ""
+  const lines = log.split("\n")
+  const errorLines: string[] = []
+  let collecting = false
+  for (const line of lines) {
+    if (line.startsWith("! ")) {
+      collecting = true
+      errorLines.push(line)
+    } else if (collecting) {
+      if (line.trim() === "" || errorLines.length >= 6) break
+      errorLines.push(line)
+    }
+  }
+  if (errorLines.length > 0) return errorLines.join("\n")
+  // No LaTeX "! " errors — return first meaningful non-empty line as the error
+  const firstMeaningful = lines.find((l) => l.trim().length > 0)
+  return firstMeaningful || ""
+}
+
+/**
+ * Compile via the local backend server (Tectonic) using compile-dir:
+ * backend reads files directly from disk — no file upload, fastest path.
+ * Falls back to compile (file upload) if directory isn't provided.
+ */
+async function compileWithBackend(
+  mainFile: string,
+  files: ProjectFile[],
+  projectDirectory?: string,
+  backendBaseUrl = DEFAULT_BACKEND_BASE_URL,
+): Promise<CompileResult> {
+  const startTime = Date.now()
+  const backendCompileUrl = `${backendBaseUrl.replace(/\/+$/, "")}/latex/compile`
+
+  // Prefer compile-dir: backend reads from disk directly, no large payload
+  if (projectDirectory) {
+    const response = await fetch(`${backendCompileUrl}-dir`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ directory: projectDirectory, mainFile }),
+    })
+    const data = await response.json() as any
+    if (data.success) {
+      return {
+        success: true,
+        pdfDataUrl: data.pdfData,
+        pdfSize: data.pdfSize,
+        log: data.log,
+        compilationTime: data.compilationTime ?? Date.now() - startTime,
+        compiler: "tectonic",
+      }
+    }
+    // compile-dir failed — if no LaTeX "!" errors, the file likely wasn't on disk yet.
+    // Fall through to upload path which sends file content directly.
+    const latexErrFromDir = data.log ? extractLatexError(data.log) : ""
+    const isLatexError = latexErrFromDir.startsWith("!")
+    if (isLatexError) {
+      // Real LaTeX syntax error — no point retrying with upload
+      return {
+        success: false,
+        error: latexErrFromDir,
+        log: data.log,
+        compilationTime: data.compilationTime ?? Date.now() - startTime,
+        compiler: "tectonic",
+      }
+    }
+    // Non-LaTeX failure (file not found, etc.) — fall through to upload
+  }
+
+  // Upload path: send file content directly (works even if file not yet on disk)
+  const response = await fetch(backendCompileUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mainFile, files }),
+  })
+  const data = await response.json() as any
+  const latexErr2 = !data.success && data.log ? extractLatexError(data.log) : ""
+  return {
+    success: data.success ?? false,
+    pdfDataUrl: data.pdfData,
+    pdfSize: data.pdfSize,
+    error: latexErr2 ? latexErr2 : data.error,
+    log: data.log,
+    compilationTime: data.compilationTime ?? Date.now() - startTime,
+    compiler: "tectonic",
+  }
+}
+
+/**
  * Compile using YtoTech online API (fallback).
  */
 async function compileWithYtoTech(
@@ -183,7 +276,11 @@ async function compileWithYtoTech(
     const name = f.path.split("/").pop() || f.path
     const entry: any = { path: f.path }
     if (f.isBinary) {
-      entry.file = f.content
+      // YtoTech expects raw base64 — strip any data: prefix
+      let b64 = f.content
+      const match = b64.match(/^data:[^;]+;base64,(.+)$/)
+      if (match) b64 = match[1]
+      entry.file = b64
     } else {
       entry.content = f.content
       if (name === mainFileName) entry.main = true
@@ -273,11 +370,16 @@ async function compileWithYtoTech(
 }
 
 /**
- * Main compile function — tries Siglum WASM first, falls back to YtoTech.
+ * Main compile function.
+ * Priority: Tectonic (local backend) → Siglum WASM → YtoTech (online)
+ *
+ * @param projectDirectory  Absolute path to project dir on server (enables fast compile-dir path)
  */
 export async function compileLatex(
   mainFile: string,
   files: ProjectFile[],
+  projectDirectory?: string,
+  backendBaseUrl = DEFAULT_BACKEND_BASE_URL,
 ): Promise<CompileResult> {
   // Find main file content
   const mainFileName = mainFile.split("/").pop() || mainFile
@@ -295,19 +397,25 @@ export async function compileLatex(
     }
   }
 
-  // Siglum WASM only runs pdflatex — it does NOT run bibtex/biber.
-  // Any project with .bib files needs the full pipeline (pdflatex → bibtex → pdflatex × 2)
-  // which only YtoTech provides. Skip Siglum when bibliography files are present.
+  // 1. Try local backend (Tectonic) — best quality, offline, full project support.
+  // If backend responds, always trust and return that result (even failures), so
+  // real LaTeX errors/warnings are never hidden by online fallback compilers.
+  try {
+    const backendResult = await compileWithBackend(mainFile, files, projectDirectory, backendBaseUrl)
+    return backendResult
+  } catch (e: any) {
+    console.warn("[latex-compiler] Backend (Tectonic) unavailable, trying Siglum WASM:", e.message)
+  }
+
+  // 2. Siglum WASM — no bibtex support, skip if .bib present
   const hasBib = files.some((f) => f.path.endsWith(".bib") && f.content.trim().length > 0)
 
   if (siglumAvailable !== false && !hasBib) {
     try {
-      // Build additionalFiles map for Siglum
       const additionalFiles: Record<string, string | Uint8Array> = {}
       for (const f of files) {
         if (f.path === mainFile || f.path === mainEntry.path) continue
         if (f.isBinary) {
-          // Decode base64 to Uint8Array
           let b64 = f.content
           const match = b64.match(/^data:[^;]+;base64,(.+)$/)
           if (match) b64 = match[1]
@@ -319,16 +427,18 @@ export async function compileLatex(
           additionalFiles[f.path] = f.content
         }
       }
-
       return await compileWithSiglum(mainEntry.content, additionalFiles)
     } catch (e: any) {
-      console.warn("[latex-compiler] Siglum compile failed, falling back to YtoTech:", e.message)
+      console.warn("[latex-compiler] Siglum failed, falling back to YtoTech:", e.message)
     }
   }
 
-  // Use YtoTech for all bibliography-containing projects (runs full bibtex pipeline)
-  // and as fallback when Siglum fails or is unavailable.
-  return compileWithYtoTech(mainFile, files)
+  // 3. YtoTech online API — fallback when local compiler unavailable
+  const ytoResult = await compileWithYtoTech(mainFile, files)
+  if (ytoResult.success || ytoResult.pdfDataUrl) {
+    return ytoResult
+  }
+  return ytoResult
 }
 
 /**

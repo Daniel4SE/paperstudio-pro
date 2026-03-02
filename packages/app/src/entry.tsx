@@ -112,7 +112,20 @@ const platform: Platform = {
 
 const defaultUrl = iife(() => {
   const lsDefault = readDefaultServerUrl()
-  if (lsDefault) return lsDefault
+  if (lsDefault) {
+    try {
+      const parsed = new URL(lsDefault)
+      const isLoopback = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1" || parsed.hostname === "::1"
+      if (isLoopback && parsed.port === "1502") {
+        const migrated = `${parsed.protocol}//${parsed.hostname}:4096`
+        writeDefaultServerUrl(migrated)
+        return migrated
+      }
+    } catch {
+      // ignore invalid stored URL and fall through to defaults below
+    }
+    return lsDefault
+  }
   if (location.hostname.includes("opencode.ai")) return "http://localhost:4096"
   if (import.meta.env.DEV)
     return `http://${import.meta.env.VITE_OPENCODE_SERVER_HOST ?? "localhost"}:${import.meta.env.VITE_OPENCODE_SERVER_PORT ?? "4096"}`

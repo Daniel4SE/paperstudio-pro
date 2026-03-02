@@ -414,6 +414,7 @@ ToolRegistry.register({
     const prompt = createMemo(() => (typeof props.input.prompt === "string" ? props.input.prompt : ""))
     const imagePath = createMemo(() => (props.metadata?.imagePath as string) || "")
     const imageData = createMemo(() => (props.metadata?.imageData as string) || "")
+    const success = createMemo(() => props.metadata?.success !== false)
 
     return (
       <BasicTool
@@ -424,7 +425,9 @@ ToolRegistry.register({
             <div data-slot="basic-tool-tool-info-main">
               <span data-slot="basic-tool-tool-title">
                 <Show when={!pending()} fallback={<TextShimmer text="Generating image..." />}>
-                  Image Generated
+                  <Show when={success()} fallback="Image generation failed">
+                    Image Generated
+                  </Show>
                 </Show>
               </span>
               <Show when={!pending() && prompt()}>
@@ -482,8 +485,8 @@ ToolRegistry.register({
               </div>
             </Show>
             <Show when={!imageData() && !imagePath()}>
-              <div style={{ "font-size": "12px", color: "var(--text-weak, #888)" }}>
-                Image generated successfully. Check the output for file path.
+              <div style={{ "font-size": "12px", color: success() ? "var(--text-weak, #888)" : "var(--text-error, #e53e3e)" }}>
+                {success() ? "Image generated successfully. Check the output for file path." : (props.output as string || "Image generation failed.")}
               </div>
             </Show>
           </div>

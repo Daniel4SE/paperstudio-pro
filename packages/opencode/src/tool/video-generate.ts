@@ -1,5 +1,7 @@
 import z from "zod"
 import { Tool } from "./tool"
+import { Auth } from "../auth"
+import { Env } from "../env"
 
 const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 
@@ -58,11 +60,16 @@ Tips:
     negativePrompt: z.string().optional().describe("What the video should avoid (e.g., 'blurry, low quality')"),
   }),
   async execute(params) {
-    const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY
+    const googleAuth = await Auth.get("google")
+    const apiKey =
+      Env.get("GOOGLE_GENERATIVE_AI_API_KEY") ||
+      Env.get("GEMINI_API_KEY") ||
+      Env.get("API_KEY") ||
+      (googleAuth?.type === "api" ? googleAuth.key : undefined)
     if (!apiKey) {
       return {
         title: "Missing API key",
-        output: "GEMINI_API_KEY is not configured. Please set it in your environment.",
+        output: "Google API key is not configured. Please add your Google API key in the provider settings (Settings → Providers → Google).",
         metadata: { success: false } as Record<string, unknown>,
       }
     }

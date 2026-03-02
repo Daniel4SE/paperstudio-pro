@@ -1,5 +1,24 @@
 import z from "zod"
 import { Tool } from "./tool"
+import { Auth } from "../auth"
+import { Env } from "../env"
+import { Instance } from "../project/instance"
+
+// Read Gemini key directly from auth.json as fallback.
+// Auth.get("google") requires a `type` field in the stored entry,
+// but the Google entry is stored as plain { key: "..." } — so safeParse fails silently.
+async function readGeminiKeyDirect(): Promise<string | undefined> {
+  try {
+    const { readFile } = await import("fs/promises")
+    const { join } = await import("path")
+    const { homedir } = await import("os")
+    const authPath = join(homedir(), ".local", "share", "opencode", "auth.json")
+    const raw = JSON.parse(await readFile(authPath, "utf8"))
+    return (raw?.google?.key as string) || undefined
+  } catch {
+    return undefined
+  }
+}
 
 const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 
@@ -66,7 +85,8 @@ Use Gemini Nano-Banana models for diagrams, illustrations, conversational editin
       .default(DEFAULT_IMAGE_MODEL)
       .describe("Which Gemini image model to use"),
     mode: z.enum(["generate", "edit"]).default("generate").describe("'generate' for text-to-image, 'edit' for editing an existing image"),
-    imageData: z.string().optional().describe("Base64 image data URL for edit mode (e.g. 'data:image/png;base64,...')"),
+    imageData: z.string().optional().describe("Base64 image data URL for edit mode (e.g. 'data:image/png;base64,...'). Use imagePath instead when the image is stored as a project file."),
+    imagePath: z.string().optional().describe("Project-relative path to the image file for edit mode (e.g. '__paperstudio_tmp/edit_image.jpg'). Preferred over imageData to avoid embedding large base64 strings in the prompt."),
     aspectRatio: z
       .enum(["16:9", "4:3", "3:2", "1:1", "2:3", "3:4", "4:5", "5:4", "9:16", "21:9"])
       .default("16:9")
@@ -77,12 +97,42 @@ Use Gemini Nano-Banana models for diagrams, illustrations, conversational editin
       .describe("Output resolution. Gemini models support 512/1K/2K/4K (default 4K). Imagen models support 1K/2K (default 2K)."),
   }),
   async execute(params) {
-    const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY
+    // Try all possible sources for the Google/Gemini API key:
+    // 1. Env vars (process.env or per-instance Env)
+    // 2. Auth store via Auth.get() (requires type:"api" in the stored entry)
+    // 3. Direct read from auth.json (for plain { key: "..." } entries without a type field)
+    const googleAuth = await Auth.get("google")
+    const apiKey =
+      Env.get("GOOGLE_GENERATIVE_AI_API_KEY") ||
+      Env.get("GEMINI_API_KEY") ||
+      Env.get("API_KEY") ||
+      (googleAuth?.type === "api" ? googleAuth.key : undefined) ||
+      (await readGeminiKeyDirect())
     if (!apiKey) {
       return {
         title: "Missing API key",
-        output: "GEMINI_API_KEY is not configured. Please set it in your environment.",
+        output: "Google API key is not configured. Please add your Google API key in the provider settings (Settings → Providers → Google).",
         metadata: { success: false } as Record<string, unknown>,
+      }
+    }
+
+    // Resolve imageData from imagePath if provided (avoids embedding huge base64 in prompts)
+    let resolvedImageData = params.imageData
+    if (!resolvedImageData && params.imagePath) {
+      try {
+        const { readFile } = await import("fs/promises")
+        const { join, extname } = await import("path")
+        const fullPath = join(Instance.directory, params.imagePath)
+        const data = await readFile(fullPath)
+        const ext = extname(params.imagePath).toLowerCase().slice(1)
+        const mime = ext === "png" ? "image/png" : ext === "gif" ? "image/gif" : ext === "webp" ? "image/webp" : "image/jpeg"
+        resolvedImageData = `data:${mime};base64,${data.toString("base64")}`
+      } catch (err: any) {
+        return {
+          title: "Image read error",
+          output: `Could not read image file at ${params.imagePath}: ${err.message}`,
+          metadata: { success: false } as Record<string, unknown>,
+        }
       }
     }
 
@@ -102,13 +152,15 @@ Use Gemini Nano-Banana models for diagrams, illustrations, conversational editin
       )
     }
 
+    const resolvedParams = { ...params, imageData: resolvedImageData }
+
     // Imagen models use a different API endpoint and format
     if (isImagenModel) {
-      return await generateWithImagen(apiKey, model, params)
+      return await generateWithImagen(apiKey, model, resolvedParams)
     }
 
     // Gemini Flash Image models use generateContent
-    return await generateWithGeminiFlash(apiKey, model, params)
+    return await generateWithGeminiFlash(apiKey, model, resolvedParams)
   },
 })
 
