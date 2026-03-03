@@ -1,154 +1,78 @@
-<p align="center">
-  <a href="https://opencode.ai">
-    <picture>
-      <source srcset="packages/console/app/src/asset/logo-ornate-dark.svg" media="(prefers-color-scheme: dark)">
-      <source srcset="packages/console/app/src/asset/logo-ornate-light.svg" media="(prefers-color-scheme: light)">
-      <img src="packages/console/app/src/asset/logo-ornate-light.svg" alt="OpenCode logo">
-    </picture>
-  </a>
-</p>
-<p align="center">The open source AI coding agent.</p>
-<p align="center">
-  <a href="https://opencode.ai/discord"><img alt="Discord" src="https://img.shields.io/discord/1391832426048651334?style=flat-square&label=discord" /></a>
-  <a href="https://www.npmjs.com/package/opencode-ai"><img alt="npm" src="https://img.shields.io/npm/v/opencode-ai?style=flat-square" /></a>
-  <a href="https://github.com/anomalyco/opencode/actions/workflows/publish.yml"><img alt="Build status" src="https://img.shields.io/github/actions/workflow/status/anomalyco/opencode/publish.yml?style=flat-square&branch=dev" /></a>
-</p>
+# PaperStudio Pro
 
-<p align="center">
-  <a href="README.md">English</a> |
-  <a href="README.zh.md">简体中文</a> |
-  <a href="README.zht.md">繁體中文</a> |
-  <a href="README.ko.md">한국어</a> |
-  <a href="README.de.md">Deutsch</a> |
-  <a href="README.es.md">Español</a> |
-  <a href="README.fr.md">Français</a> |
-  <a href="README.it.md">Italiano</a> |
-  <a href="README.da.md">Dansk</a> |
-  <a href="README.ja.md">日本語</a> |
-  <a href="README.pl.md">Polski</a> |
-  <a href="README.ru.md">Русский</a> |
-  <a href="README.bs.md">Bosanski</a> |
-  <a href="README.ar.md">العربية</a> |
-  <a href="README.no.md">Norsk</a> |
-  <a href="README.br.md">Português (Brasil)</a> |
-  <a href="README.th.md">ไทย</a> |
-  <a href="README.tr.md">Türkçe</a> |
-  <a href="README.uk.md">Українська</a> |
-  <a href="README.bn.md">বাংলা</a> |
-  <a href="README.gr.md">Ελληνικά</a>
-</p>
+PaperStudio Pro 是一个面向学术写作的 AI 论文工作台，聚合了 LaTeX 编辑、PDF 预览、引用检查、图片标注编辑与对话式协作。
 
-[![OpenCode Terminal UI](packages/web/src/assets/lander/screenshot.png)](https://opencode.ai)
+## 核心功能
 
----
+- 论文工作区：文件树 + LaTeX 编辑器 + PDF 预览 + Chat 同屏协作
+- 本地编译链路：支持目录级编译、日志解析与错误定位
+- 引用质量检查：识别 undefined/空 citation，并在编译状态中显式提示
+- 图片定向编辑：支持矩形/椭圆/箭头/点标记，标记旁即时输入修改方向
+- 协同修改开关：可选择仅改当前区域，或联动相关视觉元素一起修改
+- 文件树增强：刷新、自动刷新、拖拽上传、文件/文件夹拖拽移动
+- 交互体验优化：聊天与工作区滚动位置在刷新后可恢复
 
-### PaperStudio Customizations (This Fork)
+## 截图
 
-This fork includes a Paper/LaTeX-focused workspace with additional UX and compile features:
+### 论文工作区
 
-- Overleaf-style paper session with file tree, editor, PDF preview, and chat panel
-- Local Tectonic compile route (`/latex/compile-dir`, `/latex/compile`) and richer log capture
-- Explicit citation/reference warnings in the PDF toolbar and compilation log parsing improvements
-- Safer compile behavior: preserve backend (local) failure details instead of masking with online fallback
-- Image annotation/edit workflow improvements (multi-mark support, nearby direction boxes, collaborative change toggle)
-- File tree enhancements: refresh button, drag-and-drop move/upload behavior, and hidden LaTeX temp artifacts (`.aux`, `.bbl`, `.log`, etc.)
-- Chat scroll-position persistence across reloads for paper sessions
+![PaperStudio Workspace](packages/web/src/assets/lander/screenshot.png)
 
----
+### 编辑与协作场景
 
-### Installation
+![PaperStudio Editor](packages/web/src/assets/lander/screenshot-vscode.png)
+
+### 项目上下文视图
+
+![PaperStudio Context](packages/web/src/assets/lander/screenshot-github.png)
+
+## 如何在线使用
+
+当前仓库不绑定固定公共 SaaS 地址。你可以把服务部署到自己的服务器，然后通过浏览器在线访问。
+
+### 方式一：快速启动（开发/内网在线访问）
 
 ```bash
-# YOLO
-curl -fsSL https://opencode.ai/install | bash
+bun install
 
-# Package managers
-npm i -g opencode-ai@latest        # or bun/pnpm/yarn
-scoop install opencode             # Windows
-choco install opencode             # Windows
-brew install anomalyco/tap/opencode # macOS and Linux (recommended, always up to date)
-brew install opencode              # macOS and Linux (official brew formula, updated less)
-sudo pacman -S opencode            # Arch Linux (Stable)
-paru -S opencode-bin               # Arch Linux (Latest from AUR)
-mise use -g opencode               # Any OS
-nix run nixpkgs#opencode           # or github:anomalyco/opencode for latest dev branch
+# 终端 1：启动后端/Agent 服务
+bun run dev
+
+# 终端 2：启动 Web UI（监听 0.0.0.0）
+bun run dev:web -- --host 0.0.0.0 --port 3000
 ```
 
-> [!TIP]
-> Remove versions older than 0.1.x before installing.
+启动后，用浏览器访问 `http://<你的服务器IP>:3000`。
 
-### Desktop App (BETA)
+### 方式二：公网部署（生产）
 
-OpenCode is also available as a desktop application. Download directly from the [releases page](https://github.com/anomalyco/opencode/releases) or [opencode.ai/download](https://opencode.ai/download).
+- 将 Web 前端（`packages/app`）部署到静态站点/Node 容器
+- 将后端服务单独常驻运行，并通过反向代理暴露 API
+- 为前端域名配置 HTTPS（Nginx/Caddy/Cloudflare 均可）
 
-| Platform              | Download                              |
-| --------------------- | ------------------------------------- |
-| macOS (Apple Silicon) | `opencode-desktop-darwin-aarch64.dmg` |
-| macOS (Intel)         | `opencode-desktop-darwin-x64.dmg`     |
-| Windows               | `opencode-desktop-windows-x64.exe`    |
-| Linux                 | `.deb`, `.rpm`, or AppImage           |
+## 图片编辑模型配置（Gemini）
+
+如果你启用了图片编辑能力，系统会优先读取本地认证信息中的 Google 配置。
+
+- 认证文件：`~/.local/share/opencode/auth.json`
+- 建议在设置页选择默认图片模型（例如 `gemini-3.1-flash-image-preview`）
+- 未配置 Google 认证时，界面会提示先完成登录与默认模型设置
+
+## 项目结构（核心）
+
+- `packages/app`：Web 前端（PaperStudio UI）
+- `packages/opencode`：后端/Agent 服务
+- `packages/desktop`：桌面端壳层
+
+## 开发命令
 
 ```bash
-# macOS (Homebrew)
-brew install --cask opencode-desktop
-# Windows (Scoop)
-scoop bucket add extras; scoop install extras/opencode-desktop
+# 类型检查
+bun run typecheck
+
+# Web 本地开发
+bun run dev:web
+
+# 桌面端开发
+bun run dev:desktop
 ```
-
-#### Installation Directory
-
-The install script respects the following priority order for the installation path:
-
-1. `$OPENCODE_INSTALL_DIR` - Custom installation directory
-2. `$XDG_BIN_DIR` - XDG Base Directory Specification compliant path
-3. `$HOME/bin` - Standard user binary directory (if it exists or can be created)
-4. `$HOME/.opencode/bin` - Default fallback
-
-```bash
-# Examples
-OPENCODE_INSTALL_DIR=/usr/local/bin curl -fsSL https://opencode.ai/install | bash
-XDG_BIN_DIR=$HOME/.local/bin curl -fsSL https://opencode.ai/install | bash
-```
-
-### Agents
-
-OpenCode includes two built-in agents you can switch between with the `Tab` key.
-
-- **build** - Default, full-access agent for development work
-- **plan** - Read-only agent for analysis and code exploration
-  - Denies file edits by default
-  - Asks permission before running bash commands
-  - Ideal for exploring unfamiliar codebases or planning changes
-
-Also included is a **general** subagent for complex searches and multistep tasks.
-This is used internally and can be invoked using `@general` in messages.
-
-Learn more about [agents](https://opencode.ai/docs/agents).
-
-### Documentation
-
-For more info on how to configure OpenCode, [**head over to our docs**](https://opencode.ai/docs).
-
-### Contributing
-
-If you're interested in contributing to OpenCode, please read our [contributing docs](./CONTRIBUTING.md) before submitting a pull request.
-
-### Building on OpenCode
-
-If you are working on a project that's related to OpenCode and is using "opencode" as part of its name, for example "opencode-dashboard" or "opencode-mobile", please add a note to your README to clarify that it is not built by the OpenCode team and is not affiliated with us in any way.
-
-### FAQ
-
-#### How is this different from Claude Code?
-
-It's very similar to Claude Code in terms of capability. Here are the key differences:
-
-- 100% open source
-- Not coupled to any provider. Although we recommend the models we provide through [OpenCode Zen](https://opencode.ai/zen), OpenCode can be used with Claude, OpenAI, Google, or even local models. As models evolve, the gaps between them will close and pricing will drop, so being provider-agnostic is important.
-- Out-of-the-box LSP support
-- A focus on TUI. OpenCode is built by neovim users and the creators of [terminal.shop](https://terminal.shop); we are going to push the limits of what's possible in the terminal.
-- A client/server architecture. This, for example, can allow OpenCode to run on your computer while you drive it remotely from a mobile app, meaning that the TUI frontend is just one of the possible clients.
-
----
-
-**Join our community** [Discord](https://discord.gg/opencode) | [X.com](https://x.com/opencode)
