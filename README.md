@@ -42,6 +42,20 @@
 
 ---
 
+### PaperStudio Customizations (This Fork)
+
+This fork includes a Paper/LaTeX-focused workspace with additional UX and compile features:
+
+- Overleaf-style paper session with file tree, editor, PDF preview, and chat panel
+- Local Tectonic compile route (`/latex/compile-dir`, `/latex/compile`) and richer log capture
+- Explicit citation/reference warnings in the PDF toolbar and compilation log parsing improvements
+- Safer compile behavior: preserve backend (local) failure details instead of masking with online fallback
+- Image annotation/edit workflow improvements (multi-mark support, nearby direction boxes, collaborative change toggle)
+- File tree enhancements: refresh button, drag-and-drop move/upload behavior, and hidden LaTeX temp artifacts (`.aux`, `.bbl`, `.log`, etc.)
+- Chat scroll-position persistence across reloads for paper sessions
+
+---
+
 ### Installation
 
 ```bash
