@@ -887,9 +887,9 @@ export default function Layout(props: ParentProps) {
     )
     if (session.id === params.id) {
       if (nextSession) {
-        navigate(`/${params.dir}/session/${nextSession.id}`)
+        navigate(`/${params.dir}/paper/${nextSession.id}`)
       } else {
-        navigate(`/${params.dir}/session`)
+        navigate(`/${params.dir}/paper`)
       }
     }
   }
@@ -1109,7 +1109,7 @@ export default function Layout(props: ParentProps) {
         .catch(() => undefined)
       const next = resolved?.directory ? resolved : target
       setStore("lastProjectSession", root, { directory: next.directory, id: next.id, at: Date.now() })
-      navigateWithSidebarReset(`/${base64Encode(next.directory)}/session/${next.id}`)
+      navigateWithSidebarReset(`/${base64Encode(next.directory)}/paper/${next.id}`)
     }
 
     const projectSession = store.lastProjectSession[root]
@@ -1144,12 +1144,12 @@ export default function Layout(props: ParentProps) {
       return
     }
 
-    navigateWithSidebarReset(`/${base64Encode(root)}/session`)
+    navigateWithSidebarReset(`/${base64Encode(root)}/paper`)
   }
 
   function navigateToSession(session: Session | undefined) {
     if (!session) return
-    navigateWithSidebarReset(`/${base64Encode(session.directory)}/session/${session.id}`)
+    navigateWithSidebarReset(`/${base64Encode(session.directory)}/paper/${session.id}`)
   }
 
   function openProject(directory: string, navigate = true) {
@@ -1670,7 +1670,7 @@ export default function Layout(props: ParentProps) {
     })
 
     globalSync.child(created.directory)
-    navigateWithSidebarReset(`/${base64Encode(created.directory)}/session`)
+    navigateWithSidebarReset(`/${base64Encode(created.directory)}/paper`)
   }
 
   const workspaceSidebarCtx: WorkspaceSidebarContext = {
@@ -1863,7 +1863,7 @@ export default function Layout(props: ParentProps) {
                             size="large"
                             icon="plus-small"
                             class="w-full"
-                            onClick={() => navigateWithSidebarReset(`/${base64Encode(p().worktree)}/session`)}
+                            onClick={() => navigateWithSidebarReset(`/${base64Encode(p().worktree)}/paper`)}
                           >
                             {language.t("command.session.new")}
                           </Button>

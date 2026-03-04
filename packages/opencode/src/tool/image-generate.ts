@@ -46,6 +46,28 @@ const MODELS_SUPPORTING_4K = new Set([
 // Fallback model when user requests 4K but selected model doesn't support it
 const FALLBACK_4K_MODEL = "gemini-3.1-flash-image-preview"
 
+async function saveImageToDisk(imageDataUrl: string, prompt: string): Promise<string> {
+  try {
+    const { mkdir, writeFile } = await import("fs/promises")
+    const { join } = await import("path")
+    const figuresDir = join(Instance.directory, "figures")
+    await mkdir(figuresDir, { recursive: true })
+    const slug =
+      prompt
+        .slice(0, 40)
+        .replace(/[^a-zA-Z0-9]+/g, "-")
+        .replace(/-+$/, "")
+        .toLowerCase() || "generated"
+    const fileName = `${slug}-${Date.now()}.png`
+    const base64Data = imageDataUrl.replace(/^data:[^;]+;base64,/, "")
+    await writeFile(join(figuresDir, fileName), Buffer.from(base64Data, "base64"))
+    return `figures/${fileName}`
+  } catch (err: any) {
+    console.error(`[image_generate] Failed to save image to disk: ${err.message}`)
+    return ""
+  }
+}
+
 async function retryFetch(fn: () => Promise<Response>, retries = 3, initialDelay = 2000): Promise<Response> {
   let delay = initialDelay
   for (let i = 0; i < retries; i++) {
@@ -239,12 +261,16 @@ async function generateWithGeminiFlash(
       }
     }
 
+    // Auto-save image to figures/ directory
+    const savedPath = await saveImageToDisk(imageDataUrl, params.prompt)
+
     return {
       title: `Image ${params.mode === "edit" ? "edited" : "generated"} successfully`,
-      output: `## Image ${params.mode === "edit" ? "Edited" : "Generated"}\n\nModel: **${model}** | Resolution: **${params.imageSize || "4K"}** | Aspect: **${params.aspectRatio}**\n\nThe image has been generated successfully.\n\n${textResponse ? `**Description:** ${textResponse}` : ""}`,
+      output: `## Image ${params.mode === "edit" ? "Edited" : "Generated"}\n\nModel: **${model}** | Resolution: **${params.imageSize || "4K"}** | Aspect: **${params.aspectRatio}**\n\n${savedPath ? `**Saved to:** \`${savedPath}\`` : "The image has been generated successfully."}\n\n${textResponse ? `**Description:** ${textResponse}` : ""}`,
       metadata: {
         success: true,
         model,
+        imagePath: savedPath || "",
         imageData: imageDataUrl,
         description: textResponse,
         imageSize: params.imageSize || "4K",
@@ -322,12 +348,16 @@ async function generateWithImagen(
     const mimeType = prediction.mimeType || "image/png"
     const imageDataUrl = `data:${mimeType};base64,${prediction.bytesBase64Encoded}`
 
+    // Auto-save image to figures/ directory
+    const savedPath = await saveImageToDisk(imageDataUrl, params.prompt)
+
     return {
       title: `Image generated successfully`,
-      output: `## Image Generated\n\nModel: **${model}** | Resolution: **${imagenSize}** | Aspect: **${params.aspectRatio}**\n\nThe image has been generated successfully with Imagen.`,
+      output: `## Image Generated\n\nModel: **${model}** | Resolution: **${imagenSize}** | Aspect: **${params.aspectRatio}**\n\n${savedPath ? `**Saved to:** \`${savedPath}\`` : "The image has been generated successfully with Imagen."}`,
       metadata: {
         success: true,
         model,
+        imagePath: savedPath || "",
         imageData: imageDataUrl,
         description: "",
         imageSize: imagenSize,

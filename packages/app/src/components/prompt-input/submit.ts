@@ -233,7 +233,7 @@ export function createPromptSubmit(input: PromptSubmitInput) {
         })
       if (session) {
         layout.handoff.setTabs(base64Encode(sessionDirectory), session.id)
-        navigate(`/${base64Encode(sessionDirectory)}/session/${session.id}`)
+        navigate(`/${base64Encode(sessionDirectory)}/paper/${session.id}`)
       }
     }
     if (!session) {

@@ -53,7 +53,7 @@ impl MainWindow {
             app,
             decorations,
         )
-        .title("OpenCode")
+        .title("PaperStudio Pro")
         .disable_drag_drop_handler()
         .zoom_hotkeys_enabled(false)
         .visible(true)
@@ -139,6 +139,46 @@ impl LoadingWindow {
         .center()
         .resizable(false)
         .inner_size(640.0, 480.0)
+        .visible(true);
+
+        Ok(Self(window_builder.build()?))
+    }
+}
+
+pub struct LicenseWindow(WebviewWindow);
+
+impl Deref for LicenseWindow {
+    type Target = WebviewWindow;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl LicenseWindow {
+    pub const LABEL: &str = "license";
+
+    pub fn create(app: &AppHandle) -> Result<Self, tauri::Error> {
+        if let Some(window) = app.get_webview_window(Self::LABEL) {
+            let _ = window.set_focus();
+            return Ok(Self(window));
+        }
+
+        let decorations = use_decorations();
+
+        let window_builder = base_window_config(
+            WebviewWindowBuilder::new(
+                app,
+                Self::LABEL,
+                WebviewUrl::App("/license".into()),
+            ),
+            app,
+            decorations,
+        )
+        .title("PaperStudio Pro — Activate")
+        .center()
+        .resizable(false)
+        .inner_size(480.0, 640.0)
         .visible(true);
 
         Ok(Self(window_builder.build()?))

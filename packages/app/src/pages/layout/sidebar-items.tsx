@@ -310,7 +310,7 @@ export const SessionItem = (props: SessionItemProps): JSX.Element => {
           onMessageSelect={(message) => {
             if (!isActive()) {
               layout.pendingMessage.set(`${base64Encode(props.session.directory)}/${props.session.id}`, message.id)
-              navigate(`${props.slug}/session/${props.session.id}`)
+              navigate(`${props.slug}/paper/${props.session.id}`)
               return
             }
             window.history.replaceState(null, "", `#message-${message.id}`)
