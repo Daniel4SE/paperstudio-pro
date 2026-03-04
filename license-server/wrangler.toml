@@ -1,0 +1,23 @@
+name = "paperstudio-license"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+
+routes = [
+  { pattern = "license.paperstudios.cc", custom_domain = true }
+]
+
+[vars]
+APP_DEEP_LINK_SCHEME = "paperstudio"
+
+# Secrets (set via: wrangler secret put <name>)
+# GOOGLE_CLIENT_ID
+# GOOGLE_CLIENT_SECRET
+# LICENSE_HMAC_SECRET
+
+[[kv_namespaces]]
+binding = "LICENSES"
+id = "541a9dc55d9643eeb423bfce80dbd4e5"
+
+[[kv_namespaces]]
+binding = "ACTIVATION_CODES"
+id = "bf33dc075f9c4a428726094574204f85"

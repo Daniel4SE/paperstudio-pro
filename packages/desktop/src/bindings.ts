@@ -19,16 +19,28 @@ export const commands = {
 	wslPath: (path: string, mode: "windows" | "linux" | null) => __TAURI_INVOKE<string>("wsl_path", { path, mode }),
 	resolveAppPath: (appName: string) => __TAURI_INVOKE<string | null>("resolve_app_path", { appName }),
 	openPath: (path: string, appName: string | null) => __TAURI_INVOKE<null>("open_path", { path, appName }),
+	getLicenseStatus: () => __TAURI_INVOKE<LicenseStatus>("get_license_status"),
+	activateLicense: (activationCode: string) => __TAURI_INVOKE<LicenseStatus>("activate_license", { activationCode }),
+	verifyLicense: () => __TAURI_INVOKE<LicenseStatus>("verify_license"),
 };
 
 /** Events */
 export const events = {
+	licenseActivated: makeEvent<LicenseActivated>("license-activated"),
 	loadingWindowComplete: makeEvent<LoadingWindowComplete>("loading-window-complete"),
 	sqliteMigrationProgress: makeEvent<SqliteMigrationProgress>("sqlite-migration-progress"),
 };
 
 /* Types */
 export type InitStep = { phase: "server_waiting" } | { phase: "sqlite_waiting" } | { phase: "done" };
+
+export type LicenseActivated = null;
+
+export type LicenseStatus = {
+		isValid: boolean,
+		email: string | null,
+		error: string | null,
+	};
 
 export type LinuxDisplayBackend = "wayland" | "auto";
 

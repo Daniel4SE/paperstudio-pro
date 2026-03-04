@@ -1118,7 +1118,7 @@ export default function Page() {
                     if (!target) return
                     if (target === sdk.directory) return
                     layout.projects.open(target)
-                    navigate(`/${base64Encode(target)}/session`)
+                    navigate(`/${base64Encode(target)}/paper`)
                   }}
                 />
               </Match>

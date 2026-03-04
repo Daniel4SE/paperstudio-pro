@@ -1,5 +1,6 @@
 mod cli;
 mod constants;
+mod license;
 #[cfg(target_os = "linux")]
 pub mod linux_display;
 #[cfg(target_os = "linux")]
@@ -36,7 +37,7 @@ use tokio::{
 use crate::cli::{sqlite_migration::SqliteMigrationProgress, sync_cli};
 use crate::constants::*;
 use crate::server::get_saved_server_url;
-use crate::windows::{LoadingWindow, MainWindow};
+use crate::windows::{LicenseWindow, LoadingWindow, MainWindow};
 
 #[derive(Clone, serde::Serialize, specta::Type, Debug)]
 struct ServerReadyData {
@@ -403,11 +404,15 @@ fn make_specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             check_app_exists,
             wsl_path,
             resolve_app_path,
-            open_path
+            open_path,
+            license::get_license_status,
+            license::activate_license,
+            license::verify_license
         ])
         .events(tauri_specta::collect_events![
             LoadingWindowComplete,
-            SqliteMigrationProgress
+            SqliteMigrationProgress,
+            LicenseActivated
         ])
         .error_handling(tauri_specta::ErrorHandlingMode::Throw)
 }
@@ -431,8 +436,36 @@ fn test_export_types() {
 #[derive(tauri_specta::Event, serde::Deserialize, specta::Type)]
 struct LoadingWindowComplete;
 
+#[derive(tauri_specta::Event, serde::Deserialize, specta::Type)]
+struct LicenseActivated;
+
 async fn initialize(app: AppHandle) {
     tracing::info!("Initializing app");
+
+    // ── LICENSE GATE ──────────────────────────────────────────────────────
+    let license_valid = license::check_license_on_startup(&app).await;
+    if !license_valid {
+        tracing::info!("No valid license, showing license window");
+        LicenseWindow::create(&app).expect("Failed to create license window");
+
+        // Wait for the frontend to signal activation
+        let (license_tx, license_rx) = oneshot::channel::<()>();
+        let license_tx = Arc::new(Mutex::new(Some(license_tx)));
+        LicenseActivated::once(&app, move |_| {
+            if let Some(tx) = license_tx.lock().unwrap().take() {
+                let _ = tx.send(());
+            }
+        });
+
+        let _ = license_rx.await;
+        tracing::info!("License activated, proceeding with initialization");
+
+        // Close the license window
+        if let Some(win) = app.get_webview_window(LicenseWindow::LABEL) {
+            let _ = win.close();
+        }
+    }
+    // ── END LICENSE GATE ──────────────────────────────────────────────────
 
     let (init_tx, init_rx) = watch::channel(InitStep::ServerWaiting);
 

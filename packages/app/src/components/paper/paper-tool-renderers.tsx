@@ -7,10 +7,11 @@
  * These register into the ToolRegistry from @opencode-ai/ui/message-part
  * so they render properly in MessageTimeline.
  */
-import { createMemo, For, Show } from "solid-js"
+import { createMemo, createSignal, createEffect, For, Show } from "solid-js"
 import { ToolRegistry, type ToolProps } from "@opencode-ai/ui/message-part"
 import { BasicTool } from "@opencode-ai/ui/basic-tool"
 import { TextShimmer } from "@opencode-ai/ui/text-shimmer"
+import { useSDK } from "@/context/sdk"
 // Icon import removed — using inline SVG/text for tool renderers
 
 // ─── URL Badge Component ───────────────────────────────────────────────
@@ -410,11 +411,36 @@ ToolRegistry.register({
 ToolRegistry.register({
   name: "image_generate",
   render(props: ToolProps) {
+    const sdk = useSDK()
     const pending = createMemo(() => props.status === "pending" || props.status === "running")
     const prompt = createMemo(() => (typeof props.input.prompt === "string" ? props.input.prompt : ""))
     const imagePath = createMemo(() => (props.metadata?.imagePath as string) || "")
     const imageData = createMemo(() => (props.metadata?.imageData as string) || "")
     const success = createMemo(() => props.metadata?.success !== false)
+
+    // When imageData is missing but imagePath exists, load from server API
+    const [loadedSrc, setLoadedSrc] = createSignal("")
+    createEffect(() => {
+      const path = imagePath()
+      const data = imageData()
+      if (data || !path || pending()) return
+      // Fetch image content from OpenCode file server
+      fetch(`${sdk.url}/file/content?path=${encodeURIComponent(path)}`)
+        .then((res) => res.json())
+        .then((json: any) => {
+          if (json.content && json.mimeType) {
+            setLoadedSrc(`data:${json.mimeType};base64,${json.content}`)
+          } else if (json.content) {
+            setLoadedSrc(`data:image/png;base64,${json.content}`)
+          }
+        })
+        .catch(() => {})
+    })
+
+    const resolvedSrc = createMemo(() => {
+      if (imageData()) return imageData().startsWith("data:") ? imageData() : `data:image/png;base64,${imageData()}`
+      return loadedSrc()
+    })
 
     return (
       <BasicTool
@@ -440,7 +466,7 @@ ToolRegistry.register({
         {/* Show generated image inline */}
         <Show when={!pending()}>
           <div style={{ padding: "8px 12px" }}>
-            <Show when={imageData() || imagePath()}>
+            <Show when={resolvedSrc()}>
               <div
                 style={{
                   "border-radius": "8px",
@@ -450,11 +476,11 @@ ToolRegistry.register({
                 }}
               >
                 <img
-                  src={imageData() ? (imageData().startsWith("data:") ? imageData() : `data:image/png;base64,${imageData()}`) : imagePath()}
+                  src={resolvedSrc()}
                   alt={prompt().slice(0, 100)}
                   draggable={true}
                   onDragStart={(e) => {
-                    const src = imageData() ? (imageData().startsWith("data:") ? imageData() : `data:image/png;base64,${imageData()}`) : imagePath()
+                    const src = resolvedSrc()
                     // Generate a filename from the prompt
                     const slug = prompt().slice(0, 40).replace(/[^a-zA-Z0-9]+/g, "-").replace(/-+$/, "").toLowerCase() || "generated-image"
                     const fileName = `${slug}.png`
@@ -484,9 +510,14 @@ ToolRegistry.register({
                 {prompt().slice(0, 200)}
               </div>
             </Show>
-            <Show when={!imageData() && !imagePath()}>
+            <Show when={!resolvedSrc() && !imagePath()}>
               <div style={{ "font-size": "12px", color: success() ? "var(--text-weak, #888)" : "var(--text-error, #e53e3e)" }}>
                 {success() ? "Image generated successfully. Check the output for file path." : (props.output as string || "Image generation failed.")}
+              </div>
+            </Show>
+            <Show when={!resolvedSrc() && imagePath()}>
+              <div style={{ "font-size": "12px", color: "var(--text-weak, #888)" }}>
+                Loading image from <code>{imagePath()}</code>...
               </div>
             </Show>
           </div>
