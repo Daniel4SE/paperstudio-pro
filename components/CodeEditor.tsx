@@ -164,6 +164,112 @@ const darkEditorTheme = EditorView.theme({
   },
 }, { dark: true });
 
+const lightEditorTheme = EditorView.theme({
+  '&': {
+    backgroundColor: 'var(--c-100)',
+    color: 'var(--c-text)',
+    height: '100%',
+    fontSize: '13px',
+  },
+  '.cm-content': {
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+    padding: '16px 0',
+    caretColor: 'var(--c-accent)',
+  },
+  '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--c-accent)' },
+  '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection': {
+    backgroundColor: 'rgba(59, 130, 246, 0.25)',
+  },
+  '.cm-gutters': {
+    backgroundColor: 'var(--c-200)',
+    color: 'var(--c-text-muted)',
+    border: 'none',
+    borderRight: '1px solid var(--c-border)',
+    minWidth: '48px',
+  },
+  '.cm-lineNumbers .cm-gutterElement': {
+    padding: '0 8px 0 12px',
+    minWidth: '32px',
+    fontSize: '12px',
+  },
+  '.cm-activeLineGutter': {
+    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+    color: 'var(--c-text-secondary)',
+  },
+  '.cm-activeLine': {
+    backgroundColor: 'rgba(59, 130, 246, 0.06)',
+  },
+  '.cm-foldGutter .cm-gutterElement': {
+    padding: '0 4px',
+    cursor: 'pointer',
+  },
+  '.cm-foldPlaceholder': {
+    backgroundColor: 'var(--c-300)',
+    border: '1px solid var(--c-400)',
+    color: 'var(--c-text-muted)',
+    borderRadius: '3px',
+    padding: '0 4px',
+    margin: '0 2px',
+  },
+  '.cm-searchMatch': {
+    backgroundColor: 'rgba(234, 179, 8, 0.3)',
+    outline: '1px solid rgba(234, 179, 8, 0.5)',
+  },
+  '.cm-searchMatch.cm-searchMatch-selected': {
+    backgroundColor: 'rgba(59, 130, 246, 0.3)',
+  },
+  '.cm-panels': {
+    backgroundColor: 'var(--c-200)',
+    color: 'var(--c-text)',
+    borderBottom: '1px solid var(--c-border)',
+  },
+  '.cm-panels.cm-panels-top': {
+    borderBottom: '1px solid var(--c-border)',
+  },
+  '.cm-panel.cm-search': {
+    padding: '4px 8px',
+  },
+  '.cm-panel.cm-search input, .cm-panel.cm-search button': {
+    fontSize: '12px',
+  },
+  '.cm-panel.cm-search input': {
+    backgroundColor: 'var(--c-100)',
+    border: '1px solid var(--c-400)',
+    borderRadius: '3px',
+    color: 'var(--c-text)',
+    padding: '2px 6px',
+    outline: 'none',
+  },
+  '.cm-panel.cm-search input:focus': {
+    borderColor: 'var(--c-accent)',
+  },
+  '.cm-panel.cm-search button': {
+    backgroundColor: 'var(--c-300)',
+    border: '1px solid var(--c-400)',
+    borderRadius: '3px',
+    color: 'var(--c-text-secondary)',
+    padding: '2px 8px',
+    cursor: 'pointer',
+  },
+  '.cm-panel.cm-search button:hover': {
+    backgroundColor: 'var(--c-400)',
+    color: 'var(--c-text)',
+  },
+  '.cm-tooltip': {
+    backgroundColor: 'var(--c-200)',
+    border: '1px solid var(--c-border)',
+    borderRadius: '4px',
+  },
+  '.cm-tooltip-autocomplete': {
+    '& > ul > li[aria-selected]': {
+      backgroundColor: 'rgba(59, 130, 246, 0.2)',
+    },
+  },
+  '.cm-scroller': {
+    overflow: 'auto',
+  },
+}, { dark: false });
+
 function getLanguage(fileType: string | undefined, fileName: string | undefined): StreamLanguage<any> | null {
   const ext = fileName?.split('.').pop()?.toLowerCase() || '';
   if (fileType === 'tex' || ext === 'tex' || ext === 'bib' || ext === 'sty' || ext === 'cls' || ext === 'bst') {
@@ -205,6 +311,7 @@ const CodeEditor: React.FC<CodeEditorProps> = ({ content, onChange, fileType, fi
     const highlightExt = theme === 'dark'
       ? syntaxHighlighting(darkHighlightStyle)
       : syntaxHighlighting(lightHighlightStyle);
+    const editorTheme = theme === 'dark' ? darkEditorTheme : lightEditorTheme;
 
     const extensions = [
       lineNumbers(),
@@ -226,7 +333,7 @@ const CodeEditor: React.FC<CodeEditorProps> = ({ content, onChange, fileType, fi
         ...searchKeymap,
         indentWithTab,
       ]),
-      themeCompartment.current.of([darkEditorTheme, highlightExt]),
+      themeCompartment.current.of([editorTheme, highlightExt]),
       languageCompartment.current.of(lang ? lang : []),
       readOnlyCompartment.current.of(EditorState.readOnly.of(readOnly)),
       EditorView.updateListener.of((update) => {
@@ -278,8 +385,9 @@ const CodeEditor: React.FC<CodeEditorProps> = ({ content, onChange, fileType, fi
     const highlightExt = theme === 'dark'
       ? syntaxHighlighting(darkHighlightStyle)
       : syntaxHighlighting(lightHighlightStyle);
+    const editorTheme = theme === 'dark' ? darkEditorTheme : lightEditorTheme;
     view.dispatch({
-      effects: themeCompartment.current.reconfigure([darkEditorTheme, highlightExt]),
+      effects: themeCompartment.current.reconfigure([editorTheme, highlightExt]),
     });
   }, [theme]);
 

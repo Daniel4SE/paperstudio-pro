@@ -351,14 +351,34 @@ const App = () => {
     const name = findName(fileSystem);
     if (!confirm(`Delete "${name}"?`)) return;
 
+    const isDescendant = (parentId: string, targetId: string, nodes: FileSystemNode[]): boolean => {
+      for (const n of nodes) {
+        if (n.id === parentId) {
+          if (n.type === 'file') return false;
+          const checkChildren = (children: FileSystemNode[]): boolean => {
+            for (const child of children) {
+              if (child.id === targetId) return true;
+              if (child.children && checkChildren(child.children)) return true;
+            }
+            return false;
+          };
+          return n.children ? checkChildren(n.children) : false;
+        }
+        if (n.children && isDescendant(parentId, targetId, n.children)) return true;
+      }
+      return false;
+    };
+
     const removeRecursive = (nodes: FileSystemNode[]): FileSystemNode[] =>
       nodes
         .filter(n => n.id !== nodeId)
         .map(n => n.children ? { ...n, children: removeRecursive(n.children) } : n);
 
     setFileSystem(prev => removeRecursive(prev));
-    // If we deleted the active file, clear selection
-    if (activeFileId === nodeId) setActiveFileId('');
+    // If we deleted the active file or a folder containing it, clear selection
+    if (activeFileId === nodeId || (activeFileId && isDescendant(nodeId, activeFileId, fileSystem))) {
+      setActiveFileId('');
+    }
   };
 
   useEffect(() => {
@@ -647,32 +667,25 @@ const App = () => {
        const folderName = baseName.substring(0, 20) + "_Data";
        const folderId = `folder_${Date.now()}`;
        
+       const children = items.map((item: any, i: number) => ({
+          id: `asset_${Date.now()}_${i}`,
+          name: item.filename || `${item.type}_${i+1}.md`,
+          type: 'file' as const,
+          fileType: item.type as FileType,
+          content: item.content,
+          data: item.explanation,
+          parentId: folderId
+       }));
+
        const newFolder: FileSystemNode = {
           id: folderId,
           name: folderName,
           type: 'folder',
           isOpen: true,
-          children: []
+          children
        };
 
        addFileToFolder('root', newFolder);
-
-       // Add extracted items as files
-       items.forEach((item: any, i: number) => {
-          const fileNode: FileSystemNode = {
-             id: `asset_${Date.now()}_${i}`,
-             name: item.filename || `${item.type}_${i+1}.md`,
-             type: 'file',
-             fileType: item.type as FileType,
-             content: item.content,
-             data: item.explanation, // Use data field for explanation/extra info
-             parentId: folderId
-          };
-          newFolder.children?.push(fileNode);
-       });
-       
-       // Force update to refresh tree
-       setFileSystem(prev => [...prev]);
 
      } catch (e) {
        console.error(e);
